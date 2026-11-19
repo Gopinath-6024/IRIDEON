@@ -1,0 +1,6 @@
+{
+  "name": "RETINA-XAI",
+  "description": "Explainable AI interface for analyzing retinal fundus images and understanding diabetic retinopathy predictions for research and educational use.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
