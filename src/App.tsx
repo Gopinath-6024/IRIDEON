@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
 import { LandingPage } from './components/LandingPage';
@@ -12,17 +12,38 @@ import { SettingsPage, PrivacyPage } from './components/SettingsAndPrivacyPages'
 import { ResearcherDashboardPage } from './components/ResearcherDashboardPage';
 import { ResearcherAuthModal } from './components/ResearcherAuthModal';
 import { FloatingIrideonChat } from './components/FloatingIrideonChat';
+import { DoctorReviewPage } from './components/DoctorReviewPage';
+import { SmartReferralPage } from './components/SmartReferralPage';
+import { RetinaTimeMachinePage } from './components/RetinaTimeMachinePage';
+import { FairEyePage } from './components/FairEyePage';
 import {
   computeClientPixelStats,
   generateSyntheticFundusDataUrl,
 } from './utils/fundusGenerator';
+import {
+  computePixelSaliencyMap,
+  createCompactThumbnail,
+  evaluateClientQualityGate,
+  generateUnsuitableTestImageDataUrl,
+  runOfflineLocalScreening,
+} from './utils/retinalSaliency';
+import {
+  buildLocalRecordFromAnalysis,
+  loadLocalRecords,
+  loadLocalReferrals,
+  saveLocalRecords,
+  saveLocalReferrals,
+} from './utils/localRecordsStore';
 import type {
   AppPage,
   ChatMessage,
   ClientPixelStats,
   DemoCaseId,
+  DoctorReviewData,
   ExplainMode,
   ImageQualityMetrics,
+  LocalScreeningRecord,
+  ReferralRecord,
   ResearcherSession,
   RetinaAnalysisResult,
   ThemeMode,
@@ -64,6 +85,22 @@ export default function App() {
   const [colormap, setColormap] = useState<'thermal' | 'clinical'>('thermal');
   const [hasAcknowledgedFeatures, setHasAcknowledgedFeatures] = useState(false);
 
+  // Offline / Online Detection + Local Persistence Queue (Feature 4, 5, 6)
+  const [browserOnline, setBrowserOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+  const [simulatedOffline, setSimulatedOffline] = useState(false);
+  const isOffline = !browserOnline || simulatedOffline;
+
+  const [localRecords, setLocalRecords] = useState<LocalScreeningRecord[]>(() =>
+    loadLocalRecords()
+  );
+  const [referrals, setReferrals] = useState<ReferralRecord[]>(() => loadLocalReferrals());
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncBanner, setSyncBanner] = useState<string | null>(null);
+  const [selectedReviewRecordId, setSelectedReviewRecordId] = useState<string | null>(null);
+  const [referralDraftRecord, setReferralDraftRecord] = useState<LocalScreeningRecord | null>(null);
+
   // Active Case State
   const [activeImageUrl, setActiveImageUrl] = useState<string | null>(null);
   const [uploadedPixelStats, setUploadedPixelStats] = useState<ClientPixelStats | null>(null);
@@ -72,7 +109,7 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Shared IRIDEON Chatbot State (synced across Floating button & inline workspace)
+  // Shared IRIDEON Chatbot State
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() => [
     createWelcomeMessage('beginner'),
   ]);
@@ -82,6 +119,32 @@ export default function App() {
   const [sessionHistory, setSessionHistory] = useState<SessionCaseEntry[]>([]);
   const [session, setSession] = useState<ResearcherSession | null>(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
+
+  // Listen to browser online/offline transitions
+  useEffect(() => {
+    const onOnline = () => setBrowserOnline(true);
+    const onOffline = () => setBrowserOnline(false);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
+
+  // Persist local records and referrals to localStorage
+  useEffect(() => {
+    saveLocalRecords(localRecords);
+  }, [localRecords]);
+
+  useEffect(() => {
+    saveLocalReferrals(referrals);
+  }, [referrals]);
+
+  const queuedCount = useMemo(
+    () => localRecords.filter((r) => r.syncStatus === 'pending_sync').length,
+    [localRecords]
+  );
 
   // Apply Dark / Light / System Theme
   useEffect(() => {
@@ -119,6 +182,74 @@ export default function App() {
     setThemeMode((prev) => (prev === 'dark' ? 'light' : 'dark'));
   };
 
+  // Record a completed analysis into Local Records store
+  const recordCompletedAnalysis = useCallback(
+    async (result: RetinaAnalysisResult, imageUrl: string, offlineFlag: boolean) => {
+      const thumb = await createCompactThumbnail(imageUrl);
+      const newRec = buildLocalRecordFromAnalysis({
+        analysis: result,
+        thumbnailUrl: thumb,
+        offlineCaptured: offlineFlag,
+      });
+      setLocalRecords((prev) => [newRec, ...prev.filter((p) => p.recordId !== newRec.recordId)]);
+      setSelectedReviewRecordId(newRec.recordId);
+      setSessionHistory((prev) => [{ analysis: result, imageUrl }, ...prev]);
+      return newRec;
+    },
+    []
+  );
+
+  // Synchronize pending local records to prototype backend endpoint
+  const handleSyncQueuedRecords = useCallback(async () => {
+    if (isOffline || isSyncing) return;
+    const pending = localRecords.filter((r) => r.syncStatus === 'pending_sync');
+    if (pending.length === 0) {
+      setSyncBanner('✓ Record synchronized · No pending items in queue');
+      return;
+    }
+
+    setIsSyncing(true);
+    try {
+      const res = await fetch('/api/sync-records', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          records: pending.map((p) => ({
+            recordId: p.recordId,
+            patientDemoId: p.patientDemoId,
+          })),
+        }),
+      });
+      const data = (await res.json()) as { ok?: boolean; syncedIds?: string[]; syncedAt?: string };
+      if (!res.ok || !data.ok) {
+        throw new Error('Synchronization endpoint did not confirm upload.');
+      }
+
+      const syncedSet = new Set(data.syncedIds ?? pending.map((p) => p.recordId));
+      const syncedAt = data.syncedAt ?? new Date().toISOString();
+
+      setLocalRecords((prev) =>
+        prev.map((rec) =>
+          syncedSet.has(rec.recordId)
+            ? { ...rec, syncStatus: 'synced', syncedAt }
+            : rec
+        )
+      );
+      setReferrals((prev) =>
+        prev.map((ref) =>
+          ref.syncStatus === 'pending_sync' ? { ...ref, syncStatus: 'synced' } : ref
+        )
+      );
+      setSyncBanner(`✓ Record synchronized (${syncedSet.size} record(s) acknowledged)`);
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Unable to synchronize queued records right now.'
+      );
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [isOffline, isSyncing, localRecords]);
+
   // High-Speed SSE Streaming Doubt Clarifier Handler
   const handleSendChatQuestion = useCallback(
     async (questionText: string, mode: ExplainMode) => {
@@ -149,6 +280,22 @@ export default function App() {
       setChatMessages((prev) => [...prev, userMsg, assistantPlaceholder]);
       setChatLoading(true);
 
+      if (isOffline) {
+        setChatMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? {
+                  ...m,
+                  content:
+                    'You are currently in Offline Mode. The live IRIDEON cloud AI clarifier requires connectivity, while on-device retinal screening, quality gating, pixel saliency maps, and local record queuing remain fully functional.',
+                }
+              : m
+          )
+        );
+        setChatLoading(false);
+        return;
+      }
+
       try {
         const response = await fetch('/api/explain/stream', {
           method: 'POST',
@@ -162,7 +309,6 @@ export default function App() {
         });
 
         if (!response.ok || !response.body) {
-          // Clean JSON fallback if stream unavailable
           const fallbackRes = await fetch('/api/explain', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -271,14 +417,14 @@ export default function App() {
         setChatLoading(false);
       }
     },
-    [analysis, chatLoading, chatMessages]
+    [analysis, chatLoading, chatMessages, isOffline]
   );
 
   const handleClearChat = useCallback(() => {
     setChatMessages([createWelcomeMessage(defaultExplainMode)]);
   }, [defaultExplainMode]);
 
-  // Handle Upload + Pre-Analysis Image Quality Check
+  // Handle Upload + Pre-Analysis Smart Retinal Image Quality Gate (Feature 1)
   const handleUploadFile = async (file: File) => {
     setErrorMsg(null);
     setAnalysis(null);
@@ -315,27 +461,37 @@ export default function App() {
       setActiveImageUrl(dataUrl);
       setUploadedPixelStats(stats);
 
-      const qRes = await fetch('/api/image-quality', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageDataUrl: dataUrl, pixelStats: stats }),
-      });
-
-      const qData = (await qRes.json()) as {
-        imageQuality?: ImageQualityMetrics;
-        error?: string;
-      };
-
-      if (!qRes.ok || !qData.imageQuality) {
-        setActiveImageUrl(null);
-        setUploadedPixelStats(null);
-        setErrorMsg(
-          qData.error ?? 'Image validation failed. Please try a different JPG or PNG image.'
-        );
+      if (isOffline) {
+        setPreQuality(evaluateClientQualityGate(stats, file.type || 'image/png'));
         return;
       }
 
-      setPreQuality(qData.imageQuality);
+      try {
+        const qRes = await fetch('/api/image-quality', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageDataUrl: dataUrl, pixelStats: stats }),
+        });
+
+        const qData = (await qRes.json()) as {
+          imageQuality?: ImageQualityMetrics;
+          error?: string;
+        };
+
+        if (!qRes.ok || !qData.imageQuality) {
+          setActiveImageUrl(null);
+          setUploadedPixelStats(null);
+          setErrorMsg(
+            qData.error ?? 'Image validation failed. Please try a different JPG or PNG image.'
+          );
+          return;
+        }
+
+        setPreQuality(qData.imageQuality);
+      } catch {
+        // Offline / transient network fallback using exact client pixel quality gate
+        setPreQuality(evaluateClientQualityGate(stats, file.type || 'image/png'));
+      }
     } catch (err) {
       setErrorMsg(
         err instanceof Error
@@ -345,35 +501,108 @@ export default function App() {
     }
   };
 
-  // Run Analysis on Uploaded Image
+  // Test Quality Gate Rejection with an authentic dark/blurry canvas sample
+  const handleTestUnsuitableImage = async () => {
+    setErrorMsg(null);
+    setAnalysis(null);
+    const badUrl = generateUnsuitableTestImageDataUrl();
+    if (!badUrl) return;
+    const stats = await computeClientPixelStats(badUrl);
+    setActiveImageUrl(badUrl);
+    setUploadedPixelStats(stats);
+    setPreQuality(evaluateClientQualityGate(stats, 'image/png'));
+  };
+
+  // Run Analysis on Uploaded Image (Hard Quality Gate + Pixel Saliency + Offline Fallback)
   const handleRunAnalysis = async () => {
     if (!activeImageUrl) return;
+    if (preQuality && !preQuality.suitable) {
+      setErrorMsg(
+        'Image quality is insufficient. Please capture/upload another retinal image.'
+      );
+      return;
+    }
+
     setIsAnalyzing(true);
     setErrorMsg(null);
 
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 16000);
+      const stats = uploadedPixelStats ?? (await computeClientPixelStats(activeImageUrl));
+      const saliency = await computePixelSaliencyMap(activeImageUrl);
 
-      const res = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      let result: RetinaAnalysisResult;
+      let ranOffline = isOffline;
+
+      if (isOffline) {
+        result = await runOfflineLocalScreening({
           sourceType: 'upload',
           imageDataUrl: activeImageUrl,
-          pixelStats: uploadedPixelStats ?? undefined,
-        }),
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
+          stats,
+        });
+      } else {
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 16000);
 
-      const data = (await res.json()) as RetinaAnalysisResult & { error?: string };
-      if (!res.ok || !data.prediction) {
-        throw new Error(data.error ?? 'Analysis failed to produce an output.');
+          const res = await fetch('/api/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sourceType: 'upload',
+              imageDataUrl: activeImageUrl,
+              pixelStats: stats,
+            }),
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+
+          const data = (await res.json()) as RetinaAnalysisResult & {
+            error?: string;
+            imageQuality?: ImageQualityMetrics;
+          };
+
+          if (res.status === 422) {
+            if (data.imageQuality) setPreQuality(data.imageQuality);
+            throw new Error(
+              data.error ??
+                'Image quality is insufficient. Please capture/upload another retinal image.'
+            );
+          }
+
+          if (!res.ok || !data.prediction) {
+            throw new Error(data.error ?? 'Analysis failed to produce an output.');
+          }
+          result = data;
+        } catch (networkErr) {
+          // Respect explicit quality rejections; otherwise seamlessly fall back to offline screening
+          if (
+            networkErr instanceof Error &&
+            networkErr.message.includes('Image quality is insufficient')
+          ) {
+            throw networkErr;
+          }
+          ranOffline = true;
+          result = await runOfflineLocalScreening({
+            sourceType: 'upload',
+            imageDataUrl: activeImageUrl,
+            stats,
+          });
+        }
       }
 
-      setAnalysis(data);
-      setSessionHistory((prev) => [{ analysis: data, imageUrl: activeImageUrl }, ...prev]);
+      // Attach computed 24x24 pixel saliency grid so Retina Map is genuinely pixel-derived
+      result = {
+        ...result,
+        heatmapData: {
+          ...result.heatmapData,
+          pixelGrid: saliency.grid.length > 0 ? saliency.grid : result.heatmapData.pixelGrid,
+          regions:
+            saliency.peaks.length > 0 ? saliency.peaks : result.heatmapData.regions,
+        },
+      };
+
+      setAnalysis(result);
+      await recordCompletedAnalysis(result, activeImageUrl, ranOffline);
     } catch (err) {
       const message =
         err instanceof Error && err.name === 'AbortError'
@@ -403,23 +632,110 @@ export default function App() {
     }
 
     try {
-      const res = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sourceType: 'demo', demoCaseId: demoId }),
-      });
-      const data = (await res.json()) as RetinaAnalysisResult & { error?: string };
-      if (!res.ok || !data.prediction) {
-        throw new Error(data.error ?? 'Unable to load demo case.');
+      const stats = await computeClientPixelStats(syntheticUrl);
+      const saliency = await computePixelSaliencyMap(syntheticUrl);
+
+      let result: RetinaAnalysisResult;
+      let ranOffline = isOffline;
+
+      if (isOffline) {
+        result = await runOfflineLocalScreening({
+          sourceType: 'demo',
+          demoCaseId: demoId,
+          imageDataUrl: syntheticUrl,
+          stats,
+        });
+      } else {
+        try {
+          const res = await fetch('/api/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sourceType: 'demo', demoCaseId: demoId }),
+          });
+          const data = (await res.json()) as RetinaAnalysisResult & { error?: string };
+          if (!res.ok || !data.prediction) {
+            throw new Error(data.error ?? 'Unable to load demo case.');
+          }
+          result = data;
+        } catch {
+          ranOffline = true;
+          result = await runOfflineLocalScreening({
+            sourceType: 'demo',
+            demoCaseId: demoId,
+            imageDataUrl: syntheticUrl,
+            stats,
+          });
+        }
       }
 
-      setAnalysis(data);
-      setSessionHistory((prev) => [{ analysis: data, imageUrl: syntheticUrl }, ...prev]);
+      result = {
+        ...result,
+        heatmapData: {
+          ...result.heatmapData,
+          pixelGrid: saliency.grid.length > 0 ? saliency.grid : result.heatmapData.pixelGrid,
+        },
+      };
+
+      setAnalysis(result);
+      await recordCompletedAnalysis(result, syntheticUrl, ranOffline);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Unable to load demo case.');
     } finally {
       setIsAnalyzing(false);
     }
+  };
+
+  const handleUpdateDoctorReview = (recordId: string, review: DoctorReviewData) => {
+    setLocalRecords((prev) =>
+      prev.map((rec) =>
+        rec.recordId === recordId ? { ...rec, doctorReview: review } : rec
+      )
+    );
+  };
+
+  const handleCreateReferral = (newReferral: ReferralRecord) => {
+    setReferrals((prev) => [newReferral, ...prev]);
+    if (newReferral.recordId) {
+      setLocalRecords((prev) =>
+        prev.map((rec) =>
+          rec.recordId === newReferral.recordId
+            ? {
+                ...rec,
+                doctorReview: {
+                  ...rec.doctorReview,
+                  reviewStatus: 'Referral Recommended',
+                  referralReason: newReferral.referralReason,
+                },
+              }
+            : rec
+        )
+      );
+    }
+  };
+
+  const handleUpdateReferral = (
+    referralId: string,
+    updates: Partial<Pick<ReferralRecord, 'referralStatus' | 'followUpStatus' | 'notes'>>
+  ) => {
+    setReferrals((prev) =>
+      prev.map((ref) => (ref.referralId === referralId ? { ...ref, ...updates } : ref))
+    );
+  };
+
+  const openCurrentAnalysisInDoctorReview = () => {
+    if (analysis) {
+      const match = localRecords.find((r) => r.analysis.caseId === analysis.caseId);
+      if (match) setSelectedReviewRecordId(match.recordId);
+    }
+    navigate('doctor-review');
+  };
+
+  const openCurrentAnalysisInReferral = () => {
+    if (analysis) {
+      const match = localRecords.find((r) => r.analysis.caseId === analysis.caseId) ?? null;
+      setReferralDraftRecord(match);
+    }
+    navigate('referrals');
   };
 
   const handleLogout = async () => {
@@ -445,6 +761,9 @@ export default function App() {
         onOpenAuth={() => setAuthModalOpen(true)}
         themeMode={themeMode}
         onToggleQuickTheme={toggleQuickTheme}
+        isOffline={isOffline}
+        queuedCount={queuedCount}
+        onSyncQueuedRecords={handleSyncQueuedRecords}
       />
 
       <main className="flex-1">
@@ -491,13 +810,51 @@ export default function App() {
             onUploadFile={handleUploadFile}
             onRunAnalysis={handleRunAnalysis}
             onSelectDemo={(id) => handleSelectDemo(id)}
+            onTestUnsuitableImage={handleTestUnsuitableImage}
             onNavigate={navigate}
+            onSendToDoctorReview={openCurrentAnalysisInDoctorReview}
+            onCreateReferral={openCurrentAnalysisInReferral}
+            isOffline={isOffline}
+            simulatedOffline={simulatedOffline}
+            onToggleSimulatedOffline={() => setSimulatedOffline((v) => !v)}
+            queuedCount={queuedCount}
+            isSyncing={isSyncing}
+            syncBanner={syncBanner}
+            onSyncQueuedRecords={handleSyncQueuedRecords}
             chatMessages={chatMessages}
             chatLoading={chatLoading}
             onSendChatQuestion={handleSendChatQuestion}
             onClearChat={handleClearChat}
           />
         )}
+
+        {currentPage === 'time-machine' && (
+          <RetinaTimeMachinePage records={localRecords} />
+        )}
+
+        {currentPage === 'doctor-review' && (
+          <DoctorReviewPage
+            records={localRecords}
+            initialRecordId={selectedReviewRecordId}
+            onUpdateReview={handleUpdateDoctorReview}
+            onCreateReferralFromRecord={(rec) => {
+              setReferralDraftRecord(rec);
+              navigate('referrals');
+            }}
+          />
+        )}
+
+        {currentPage === 'referrals' && (
+          <SmartReferralPage
+            records={localRecords}
+            referrals={referrals}
+            draftRecord={referralDraftRecord}
+            onCreateReferral={handleCreateReferral}
+            onUpdateReferral={handleUpdateReferral}
+          />
+        )}
+
+        {currentPage === 'fair-eye' && <FairEyePage records={localRecords} />}
 
         {currentPage === 'feature-explorer' && <FeatureExplorerPage />}
 
@@ -558,3 +915,4 @@ export default function App() {
     </div>
   );
 }
+

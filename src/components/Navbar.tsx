@@ -9,6 +9,9 @@ import {
   Settings as SettingsIcon,
   Sun,
   Moon,
+  ChevronDown,
+  WifiOff,
+  CloudUpload,
 } from 'lucide-react';
 import type { AppPage, ResearcherSession, ThemeMode } from '../types/retina';
 
@@ -19,16 +22,28 @@ interface NavbarProps {
   onOpenAuth: () => void;
   themeMode: ThemeMode;
   onToggleQuickTheme: () => void;
+  isOffline: boolean;
+  queuedCount: number;
+  onSyncQueuedRecords: () => void;
 }
 
 const PRIMARY_NAV: { id: AppPage; label: string }[] = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'analyze', label: 'Analyze' },
-  { id: 'explainability', label: 'Explainability' },
+  { id: 'time-machine', label: 'Time Machine' },
+  { id: 'doctor-review', label: 'Doctor Review' },
+  { id: 'referrals', label: 'Referrals' },
+  { id: 'fair-eye', label: 'Fair-Eye' },
+];
+
+const SECONDARY_NAV: { id: AppPage; label: string }[] = [
+  { id: 'explainability', label: 'Explainability Lens' },
   { id: 'feature-explorer', label: 'Feature Explorer' },
-  { id: 'reports', label: 'Reports' },
-  { id: 'learn', label: 'Learn' },
-  { id: 'about', label: 'About' },
+  { id: 'comparison', label: 'Image Comparison' },
+  { id: 'reports', label: 'Case Reports' },
+  { id: 'learn', label: 'Learn DR & XAI' },
+  { id: 'about', label: 'About & Model Card' },
+  { id: 'privacy', label: 'Privacy & Disclaimer' },
 ];
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -38,18 +53,25 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenAuth,
   themeMode,
   onToggleQuickTheme,
+  isOffline,
+  queuedCount,
+  onSyncQueuedRecords,
 }) => {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
 
   const handleNav = (page: AppPage) => {
     onNavigate(page);
     setMobileOpen(false);
+    setMoreOpen(false);
   };
+
+  const secondaryActive = SECONDARY_NAV.some((item) => item.id === currentPage);
 
   return (
     <div className="no-print sticky top-0 z-40">
       <header className="border-b border-slate-200 dark:border-slate-800/90 bg-white/95 dark:bg-[#070B14]/95 backdrop-blur-md">
-        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-8">
+        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
           {/* Zone 1: Single-line Brand Wordmark */}
           <button
             type="button"
@@ -69,9 +91,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             aria-label="Primary Navigation"
           >
             {PRIMARY_NAV.map((item) => {
-              const active =
-                currentPage === item.id ||
-                (item.id === 'explainability' && currentPage === 'comparison');
+              const active = currentPage === item.id;
               return (
                 <button
                   key={item.id}
@@ -87,10 +107,71 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </button>
               );
             })}
+
+            {/* Secondary XAI & Resources Dropdown */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setMoreOpen((v) => !v)}
+                aria-expanded={moreOpen}
+                className={`inline-flex items-center gap-1 whitespace-nowrap shrink-0 py-1.5 border-b-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 rounded-t-sm ${
+                  secondaryActive
+                    ? 'border-cyan-600 dark:border-cyan-400 text-slate-900 dark:text-white font-semibold'
+                    : 'border-transparent text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <span>XAI & More</span>
+                <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" />
+              </button>
+
+              {moreOpen && (
+                <div
+                  onMouseLeave={() => setMoreOpen(false)}
+                  className="absolute right-0 mt-2 w-52 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] shadow-lg py-1.5 z-50"
+                >
+                  {SECONDARY_NAV.map((sub) => (
+                    <button
+                      key={sub.id}
+                      type="button"
+                      onClick={() => handleNav(sub.id)}
+                      className={`w-full text-left px-3.5 py-2 text-xs font-medium transition-colors ${
+                        currentPage === sub.id
+                          ? 'bg-cyan-50 dark:bg-cyan-950/50 text-cyan-800 dark:text-cyan-200 font-semibold'
+                          : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/70'
+                      }`}
+                    >
+                      {sub.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </nav>
 
-          {/* Zone 3: Single Primary Action + Utility */}
-          <div className="flex items-center gap-2.5 shrink-0">
+          {/* Zone 3: Offline/Sync Utility + Theme + Settings + Auth */}
+          <div className="flex items-center gap-2 shrink-0">
+            {isOffline ? (
+              <span
+                title="Offline mode active — screenings saved locally"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-[11px] font-mono font-semibold text-amber-800 dark:text-amber-300 whitespace-nowrap"
+              >
+                <WifiOff className="w-3.5 h-3.5" aria-hidden="true" />
+                <span className="hidden sm:inline">Offline ({queuedCount})</span>
+              </span>
+            ) : (
+              queuedCount > 0 && (
+                <button
+                  type="button"
+                  onClick={onSyncQueuedRecords}
+                  title="Synchronization available — upload queued local records"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-cyan-300 dark:border-cyan-800 bg-cyan-50 dark:bg-cyan-950/40 text-[11px] font-mono font-semibold text-cyan-800 dark:text-cyan-300 hover:border-cyan-500 transition-colors whitespace-nowrap"
+                >
+                  <CloudUpload className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span className="hidden sm:inline">Sync ({queuedCount})</span>
+                </button>
+              )
+            )}
+
             <button
               type="button"
               onClick={onToggleQuickTheme}
@@ -152,17 +233,17 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Mobile Drawer */}
         {mobileOpen && (
           <nav
-            className="lg:hidden border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0B1120] px-4 py-3 space-y-1"
+            className="lg:hidden border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0B1120] px-4 py-3 space-y-1 max-h-[75vh] overflow-y-auto"
             aria-label="Mobile Navigation"
           >
-            {PRIMARY_NAV.map((item) => {
+            {[...PRIMARY_NAV, ...SECONDARY_NAV].map((item) => {
               const active = currentPage === item.id;
               return (
                 <button
                   key={item.id}
                   type="button"
                   onClick={() => handleNav(item.id)}
-                  className={`w-full text-left px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                  className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
                     active
                       ? 'bg-cyan-50 dark:bg-cyan-950/50 text-cyan-800 dark:text-cyan-200 font-semibold'
                       : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/60'
@@ -173,13 +254,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               );
             })}
             <div className="pt-2 border-t border-slate-200 dark:border-slate-800 flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => handleNav('comparison')}
-                className="flex-1 text-left px-3 py-2 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-              >
-                Image Comparison
-              </button>
               <button
                 type="button"
                 onClick={() => handleNav('settings')}
@@ -208,10 +282,11 @@ export const Navbar: React.FC<NavbarProps> = ({
         <div className="max-w-[1440px] mx-auto flex items-center justify-center gap-2 text-[11px] sm:text-xs text-amber-900 dark:text-amber-200 text-center">
           <ShieldAlert className="w-3.5 h-3.5 text-amber-700 dark:text-amber-400 shrink-0" aria-hidden="true" />
           <span>
-            Research and educational use only. This AI output is not a medical diagnosis and should not replace evaluation by a qualified ophthalmologist.
+            Research and educational use only. Screening support — not a standalone diagnosis. This AI output is not a medical diagnosis and should not replace evaluation by a qualified ophthalmologist.
           </span>
         </div>
       </div>
     </div>
   );
 };
+

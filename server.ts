@@ -152,6 +152,15 @@ app.post('/api/analyze', async (req, res) => {
       return;
     }
 
+    const preQuality = evaluateImageQuality(validation.info, pixelStats);
+    if (!preQuality.suitable) {
+      res.status(422).json({
+        error: preQuality.suitabilityMessage,
+        imageQuality: preQuality,
+      });
+      return;
+    }
+
     const result = await analyzeRetinalImage({
       sourceType: 'upload',
       imageInfo: validation.info,
@@ -165,6 +174,45 @@ app.post('/api/analyze', async (req, res) => {
         ? 'Analysis timed out while waiting for the inference service.'
         : 'Unable to complete retinal image analysis right now. Please try again.';
     res.status(502).json({ error: message });
+  }
+});
+
+// Prototype Offline Record Synchronization endpoint (ephemeral in-memory acknowledgment; no real cloud clinical DB)
+const syncedPrototypeRegistry = new Map<string, { syncedAt: string; patientDemoId: string }>();
+
+app.post('/api/sync-records', (req, res) => {
+  try {
+    const { records } = (req.body ?? {}) as {
+      records?: { recordId?: string; patientDemoId?: string }[];
+    };
+    if (!Array.isArray(records) || records.length === 0) {
+      res.status(400).json({ error: 'No queued records provided for synchronization.' });
+      return;
+    }
+
+    const syncedAt = new Date().toISOString();
+    const syncedIds: string[] = [];
+    for (const r of records.slice(0, 50)) {
+      if (typeof r?.recordId === 'string' && r.recordId.trim()) {
+        const cleanId = r.recordId.trim().slice(0, 64);
+        syncedPrototypeRegistry.set(cleanId, {
+          syncedAt,
+          patientDemoId: typeof r.patientDemoId === 'string' ? r.patientDemoId.slice(0, 40) : 'DEMO',
+        });
+        syncedIds.push(cleanId);
+      }
+    }
+
+    res.json({
+      ok: true,
+      syncedIds,
+      syncedAt,
+      mode: 'PROTOTYPE_EPHEMERAL_SYNC',
+      notice:
+        'Prototype synchronization acknowledged in server session memory. No real hospital or cloud EHR database is attached.',
+    });
+  } catch {
+    res.status(500).json({ error: 'Unable to process prototype record synchronization.' });
   }
 });
 

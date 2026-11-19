@@ -15,6 +15,12 @@ import {
   Eye,
   ArrowRight,
   BookOpen,
+  Wifi,
+  WifiOff,
+  CloudUpload,
+  Stethoscope,
+  Send,
+  XCircle,
 } from 'lucide-react';
 import { ExplainabilityViewer, type FocusTarget, type ViewerTab } from './ExplainabilityViewer';
 import { AIReasoningLens } from './AIReasoningLens';
@@ -45,7 +51,17 @@ interface AnalysisWorkspaceProps {
   onUploadFile: (file: File) => void;
   onRunAnalysis: () => void;
   onSelectDemo: (demoId: DemoCaseId) => void;
+  onTestUnsuitableImage: () => void;
   onNavigate: (page: AppPage) => void;
+  onSendToDoctorReview: () => void;
+  onCreateReferral: () => void;
+  isOffline: boolean;
+  simulatedOffline: boolean;
+  onToggleSimulatedOffline: () => void;
+  queuedCount: number;
+  isSyncing: boolean;
+  syncBanner: string | null;
+  onSyncQueuedRecords: () => void;
   chatMessages: ChatMessage[];
   chatLoading: boolean;
   onSendChatQuestion: (question: string, mode: ExplainMode) => void;
@@ -89,7 +105,17 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
   onUploadFile,
   onRunAnalysis,
   onSelectDemo,
+  onTestUnsuitableImage,
   onNavigate,
+  onSendToDoctorReview,
+  onCreateReferral,
+  isOffline,
+  simulatedOffline,
+  onToggleSimulatedOffline,
+  queuedCount,
+  isSyncing,
+  syncBanner,
+  onSyncQueuedRecords,
   chatMessages,
   chatLoading,
   onSendChatQuestion,
@@ -102,6 +128,7 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
   const [showFeaturesDrawer, setShowFeaturesDrawer] = useState(false);
 
   const activeQuality = analysis?.imageQuality ?? preQuality;
+  const isQualityBlocked = Boolean(preQuality && !preQuality.suitable);
 
   const handleFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -242,6 +269,58 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
         </div>
       </div>
 
+      {/* Offline & Local Sync Status Bar */}
+      <div
+        className={`rounded-xl border px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs ${
+          isOffline
+            ? 'border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/35 text-amber-950 dark:text-amber-100'
+            : queuedCount > 0
+              ? 'border-cyan-300 dark:border-cyan-800 bg-cyan-50/70 dark:bg-cyan-950/25 text-slate-800 dark:text-slate-100'
+              : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] text-slate-700 dark:text-slate-300'
+        }`}
+      >
+        <div className="flex flex-wrap items-center gap-2.5">
+          {isOffline ? (
+            <WifiOff className="w-4 h-4 text-amber-700 dark:text-amber-400 shrink-0" />
+          ) : (
+            <Wifi className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+          )}
+          <span className="font-mono font-semibold">
+            {isOffline ? 'OFFLINE MODE ACTIVE' : 'ONLINE'}
+          </span>
+          <span aria-hidden="true">·</span>
+          <span>
+            {isOffline
+              ? 'On-device screening active. Saved locally · ✓ Screening completed · ☁ Waiting for synchronization'
+              : queuedCount > 0
+                ? `Synchronization available → ${queuedCount} queued record(s) ready for upload`
+                : syncBanner || '✓ Record synchronized · Local queue up to date'}
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={onToggleSimulatedOffline}
+            className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-[11px] font-mono text-slate-700 dark:text-slate-200 hover:border-cyan-500 transition-colors"
+          >
+            {simulatedOffline ? 'Exit Offline Test' : 'Simulate Offline'}
+          </button>
+
+          {!isOffline && queuedCount > 0 && (
+            <button
+              type="button"
+              disabled={isSyncing}
+              onClick={onSyncQueuedRecords}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-800 dark:bg-cyan-600 dark:hover:bg-cyan-500 text-white text-xs font-semibold disabled:opacity-50 transition-colors"
+            >
+              <CloudUpload className="w-3.5 h-3.5" />
+              <span>{isSyncing ? 'Uploading...' : `Upload queued record (${queuedCount})`}</span>
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* Collapsible Features Reference at Top */}
       {showFeaturesDrawer && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -357,17 +436,22 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
               )}
             </div>
 
-            <div className="flex flex-wrap items-center gap-2.5">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                disabled={!imageUrl || isAnalyzing}
+                disabled={!imageUrl || isAnalyzing || isQualityBlocked}
                 onClick={onRunAnalysis}
-                className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-cyan-700 hover:bg-cyan-800 dark:bg-cyan-600 dark:hover:bg-cyan-500 text-white text-xs sm:text-sm font-semibold disabled:opacity-45 transition-colors whitespace-nowrap"
+                className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-cyan-700 hover:bg-cyan-800 dark:bg-cyan-600 dark:hover:bg-cyan-500 text-white text-xs sm:text-sm font-semibold disabled:opacity-45 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
               >
                 {isAnalyzing ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
                     <span>Analyzing with IRIDEON...</span>
+                  </>
+                ) : isQualityBlocked ? (
+                  <>
+                    <XCircle className="w-4 h-4" aria-hidden="true" />
+                    <span>Quality Insufficient — Blocked</span>
                   </>
                 ) : (
                   <>
@@ -381,10 +465,20 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
                 type="button"
                 disabled={isAnalyzing}
                 onClick={() => onSelectDemo('demo-b')}
-                className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-cyan-500 text-slate-800 dark:text-slate-200 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap"
+                className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-cyan-500 text-slate-800 dark:text-slate-200 text-xs font-medium transition-colors whitespace-nowrap"
               >
                 <ImageIcon className="w-4 h-4 text-cyan-600 dark:text-cyan-400" aria-hidden="true" />
                 <span>Try Demo Image</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={isAnalyzing}
+                onClick={onTestUnsuitableImage}
+                title="Test Quality Gate with a dark & blurry sample"
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-amber-500 text-slate-700 dark:text-slate-300 text-xs font-medium transition-colors whitespace-nowrap"
+              >
+                <span>Test Blurry/Dark</span>
               </button>
             </div>
 
@@ -430,13 +524,24 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
             </div>
           </div>
 
-          {/* Pre-Analysis Image Quality Assessment */}
+          {/* Pre-Analysis Smart Retinal Image Quality Gate */}
           {activeQuality && (
             <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-5 space-y-4">
               <div className="flex items-center justify-between gap-2">
-                <h2 className="font-display text-base font-semibold text-slate-900 dark:text-white">
-                  Image Quality Assessment
-                </h2>
+                <div>
+                  <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+                    IMAGE QUALITY GATE
+                  </p>
+                  <h2
+                    className={`font-display text-base font-bold mt-0.5 ${
+                      activeQuality.suitable
+                        ? 'text-emerald-700 dark:text-emerald-400'
+                        : 'text-red-700 dark:text-red-400'
+                    }`}
+                  >
+                    {activeQuality.suitable ? '✓ Suitable for screening' : '✕ Unsuitable'}
+                  </h2>
+                </div>
                 <span
                   className={`font-mono text-xs font-semibold ${
                     activeQuality.overall === 'Good'
@@ -446,18 +551,39 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
                         : 'text-red-700 dark:text-red-400'
                   }`}
                 >
-                  {activeQuality.overall === 'Good'
-                    ? '● Good'
-                    : activeQuality.overall === 'Acceptable'
-                      ? '▲ Acceptable'
-                      : '✖ Poor'}
+                  Overall: {activeQuality.overall}
                 </span>
               </div>
 
-              {activeQuality.warning && (
-                <div className="rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 p-3 text-xs text-red-900 dark:text-red-200 flex items-start gap-2">
-                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>{activeQuality.warning}</span>
+              {activeQuality.suitable ? (
+                <div className="rounded-lg border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/70 dark:bg-emerald-950/25 p-3 text-xs text-emerald-900 dark:text-emerald-200 flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                  <span className="font-medium">{activeQuality.suitabilityMessage}</span>
+                </div>
+              ) : (
+                <div
+                  role="alert"
+                  className="rounded-lg border border-red-300 dark:border-red-900/70 bg-red-50 dark:bg-red-950/35 p-3.5 text-xs text-red-950 dark:text-red-200 space-y-2"
+                >
+                  <div className="flex items-start gap-2 font-semibold">
+                    <XCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-600 dark:text-red-400" />
+                    <span>{activeQuality.suitabilityMessage}</span>
+                  </div>
+                  {activeQuality.unsuitableReasons.length > 0 && (
+                    <div className="pl-6 space-y-0.5">
+                      <p className="font-mono text-[11px] uppercase text-red-800 dark:text-red-300">
+                        Reason(s):
+                      </p>
+                      <ul className="list-disc pl-4 space-y-0.5">
+                        {activeQuality.unsuitableReasons.map((reason) => (
+                          <li key={reason}>{reason}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  <p className="pl-6 font-medium text-red-900 dark:text-red-100">
+                    Action: {activeQuality.actionRequired || 'Capture another image'}
+                  </p>
                 </div>
               )}
 
@@ -599,9 +725,23 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
                     </h2>
                   </div>
 
-                  <div className="flex items-center gap-2 text-xs font-mono text-emerald-700 dark:text-emerald-400">
-                    <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
-                    <span>IRIDEON analysis completed</span>
+                  <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
+                    <span
+                      className={
+                        analysis.reliabilityStatus === 'reliable_screening'
+                          ? 'text-emerald-700 dark:text-emerald-400'
+                          : analysis.reliabilityStatus === 'uncertain_result'
+                            ? 'text-amber-700 dark:text-amber-400'
+                            : 'text-red-700 dark:text-red-400'
+                      }
+                    >
+                      {analysis.reliabilityLabel}
+                    </span>
+                    <span className="text-slate-400">·</span>
+                    <span className="text-emerald-700 dark:text-emerald-400 inline-flex items-center gap-1">
+                      <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>{analysis.offlineGenerated ? 'Saved locally (Offline)' : 'Saved to queue'}</span>
+                    </span>
                   </div>
                 </div>
 
@@ -648,15 +788,37 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
                   </div>
                 </div>
 
-                <p className="text-xs text-slate-500 dark:text-slate-400 pt-2 border-t border-slate-100 dark:border-slate-800/80">
-                  Confidence scores describe prototype model output concentration, not medical certainty.
-                </p>
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-100 dark:border-slate-800/80">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Screening support — not a standalone diagnosis. Output scores are prototype estimates.
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={onSendToDoctorReview}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#090E1A] text-xs font-medium text-slate-800 dark:text-slate-200 hover:border-cyan-500 transition-colors"
+                    >
+                      <Stethoscope className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400" />
+                      <span>Open in Doctor Review</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onCreateReferral}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-800 dark:bg-cyan-600 dark:hover:bg-cyan-500 text-white text-xs font-semibold transition-colors"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      <span>Refer for Professional Review</span>
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {/* Explainability Image Viewer */}
               <ExplainabilityViewer
                 imageUrl={imageUrl}
                 heatmapRegions={analysis.heatmapData.regions}
+                pixelGrid={analysis.heatmapData.pixelGrid}
+                explainabilityMethod={analysis.modelMetadata.explainabilityMethod}
                 detectedFeatures={analysis.detectedFeatures}
                 focusTarget={focusTarget}
                 activeTab={viewerTab}
@@ -728,7 +890,13 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
             <ConfidenceAndUncertainty
               confidence={analysis.confidence}
               uncertainty={analysis.uncertainty}
+              entropyScore={analysis.entropyScore}
+              reliabilityStatus={analysis.reliabilityStatus}
+              reliabilityLabel={analysis.reliabilityLabel}
+              reliabilityMessage={analysis.reliabilityMessage}
               uncertaintyFactors={analysis.uncertaintyFactors}
+              onOpenDoctorReview={onSendToDoctorReview}
+              onCreateReferral={onCreateReferral}
             />
             <WhatIfExplorer analysis={analysis} />
           </div>

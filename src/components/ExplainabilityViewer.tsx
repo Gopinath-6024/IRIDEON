@@ -29,6 +29,8 @@ export interface FocusTarget {
 interface ExplainabilityViewerProps {
   imageUrl: string;
   heatmapRegions: HeatmapRegion[];
+  pixelGrid?: number[][];
+  explainabilityMethod?: string;
   detectedFeatures: DetectedFeature[];
   focusTarget: FocusTarget | null;
   activeTab: ViewerTab;
@@ -40,15 +42,17 @@ interface ExplainabilityViewerProps {
 const VIEWER_TABS: { id: ViewerTab; label: string }[] = [
   { id: 'original', label: 'Original' },
   { id: 'attention', label: 'Attention Map' },
-  { id: 'heatmap', label: 'Heatmap' },
+  { id: 'heatmap', label: 'Retina Map (Heatmap)' },
   { id: 'features', label: 'Feature Overlay' },
   { id: 'edges', label: 'Edge/Structure View' },
-  { id: 'comparison', label: 'Comparison' },
+  { id: 'comparison', label: 'Overlay Comparison' },
 ];
 
 export const ExplainabilityViewer: React.FC<ExplainabilityViewerProps> = ({
   imageUrl,
   heatmapRegions,
+  pixelGrid,
+  explainabilityMethod,
   detectedFeatures,
   focusTarget,
   activeTab,
@@ -62,9 +66,68 @@ export const ExplainabilityViewer: React.FC<ExplainabilityViewerProps> = ({
   const [overlayEnabled, setOverlayEnabled] = useState(true);
   const [sliderPos, setSliderPos] = useState(52);
   const [edgeUrl, setEdgeUrl] = useState<string | null>(null);
+  const [pixelHeatmapUrl, setPixelHeatmapUrl] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const dragStartRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // Render smooth continuous pixel saliency map when 24x24 computed pixelGrid is provided
+  useEffect(() => {
+    if (!pixelGrid || pixelGrid.length === 0) {
+      setPixelHeatmapUrl(null);
+      return;
+    }
+    const dim = pixelGrid.length;
+    const small = document.createElement('canvas');
+    small.width = dim;
+    small.height = dim;
+    const sCtx = small.getContext('2d');
+    if (!sCtx) return;
+
+    const imgData = sCtx.createImageData(dim, dim);
+    for (let y = 0; y < dim; y++) {
+      for (let x = 0; x < dim; x++) {
+        const v = Math.max(0, Math.min(1, pixelGrid[y]?.[x] ?? 0));
+        const idx = (y * dim + x) * 4;
+        if (v < 0.12) {
+          imgData.data[idx + 3] = 0;
+          continue;
+        }
+        if (colormap === 'clinical') {
+          // Cyan -> Amber
+          imgData.data[idx] = Math.round(6 + v * 239);
+          imgData.data[idx + 1] = Math.round(182 - v * 24);
+          imgData.data[idx + 2] = Math.round(212 * (1 - v));
+        } else {
+          // Thermal: Cyan -> Amber -> Red
+          if (v < 0.55) {
+            const t = v / 0.55;
+            imgData.data[idx] = Math.round(6 + t * 239);
+            imgData.data[idx + 1] = Math.round(182 - t * 24);
+            imgData.data[idx + 2] = Math.round(212 * (1 - t));
+          } else {
+            const t = (v - 0.55) / 0.45;
+            imgData.data[idx] = 239;
+            imgData.data[idx + 1] = Math.round(158 * (1 - t));
+            imgData.data[idx + 2] = Math.round(11 + t * 50);
+          }
+        }
+        imgData.data[idx + 3] = Math.round(Math.min(235, v * 255));
+      }
+    }
+    sCtx.putImageData(imgData, 0, 0);
+
+    const out = document.createElement('canvas');
+    out.width = 256;
+    out.height = 256;
+    const oCtx = out.getContext('2d');
+    if (!oCtx) return;
+    oCtx.imageSmoothingEnabled = true;
+    oCtx.imageSmoothingQuality = 'high';
+    oCtx.filter = 'blur(8px)';
+    oCtx.drawImage(small, 0, 0, 256, 256);
+    setPixelHeatmapUrl(out.toDataURL('image/png'));
+  }, [pixelGrid, colormap]);
 
   // Compute Sobel edge/structure view when needed
   useEffect(() => {
@@ -134,49 +197,59 @@ export const ExplainabilityViewer: React.FC<ExplainabilityViewerProps> = ({
     if (!showHeat && !showAttention && !showFeatures) return null;
 
     return (
-      <svg
-        viewBox="0 0 100 100"
-        className="absolute inset-0 w-full h-full pointer-events-none"
-        style={{ opacity: opacity / 100 }}
-        aria-hidden="true"
-      >
-        <defs>
-          {heatmapRegions.map((reg, idx) => {
-            const hotColor =
-              colormap === 'clinical'
-                ? reg.intensity > 0.75
-                  ? '#f59e0b'
-                  : '#06b6d4'
-                : reg.intensity > 0.78
-                  ? '#ef4444'
-                  : reg.intensity > 0.55
+      <>
+        {showHeat && pixelHeatmapUrl && (
+          <img
+            src={pixelHeatmapUrl}
+            alt=""
+            aria-hidden="true"
+            className="absolute inset-0 w-full h-full object-contain pointer-events-none mix-blend-screen"
+            style={{ opacity: opacity / 100 }}
+          />
+        )}
+        <svg
+          viewBox="0 0 100 100"
+          className="absolute inset-0 w-full h-full pointer-events-none"
+          style={{ opacity: opacity / 100 }}
+          aria-hidden="true"
+        >
+          <defs>
+            {heatmapRegions.map((reg, idx) => {
+              const hotColor =
+                colormap === 'clinical'
+                  ? reg.intensity > 0.75
                     ? '#f59e0b'
-                    : '#06b6d4';
+                    : '#06b6d4'
+                  : reg.intensity > 0.78
+                    ? '#ef4444'
+                    : reg.intensity > 0.55
+                      ? '#f59e0b'
+                      : '#06b6d4';
 
-            const midColor =
-              colormap === 'clinical' ? '#0891b2' : '#eab308';
+              const midColor =
+                colormap === 'clinical' ? '#0891b2' : '#eab308';
 
-            return (
-              <radialGradient key={`grad-${idx}`} id={`heat-grad-${idx}`} cx="50%" cy="50%" r="50%">
-                <stop offset="0%" stopColor={hotColor} stopOpacity={Math.min(0.85, reg.intensity)} />
-                <stop offset="52%" stopColor={midColor} stopOpacity={reg.intensity * 0.45} />
-                <stop offset="100%" stopColor={midColor} stopOpacity="0" />
-              </radialGradient>
-            );
-          })}
-        </defs>
+              return (
+                <radialGradient key={`grad-${idx}`} id={`heat-grad-${idx}`} cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stopColor={hotColor} stopOpacity={Math.min(0.85, reg.intensity)} />
+                  <stop offset="52%" stopColor={midColor} stopOpacity={reg.intensity * 0.45} />
+                  <stop offset="100%" stopColor={midColor} stopOpacity="0" />
+                </radialGradient>
+              );
+            })}
+          </defs>
 
-        {/* Heatmap Gaussian Saliency Blobs */}
-        {showHeat &&
-          heatmapRegions.map((reg, idx) => (
-            <circle
-              key={`hm-${idx}`}
-              cx={reg.x}
-              cy={reg.y}
-              r={reg.radius}
-              fill={`url(#heat-grad-${idx})`}
-            />
-          ))}
+          {/* Heatmap Gaussian Saliency Blobs (used when pixel grid isn't available or as soft region highlights) */}
+          {showHeat && !pixelHeatmapUrl &&
+            heatmapRegions.map((reg, idx) => (
+              <circle
+                key={`hm-${idx}`}
+                cx={reg.x}
+                cy={reg.y}
+                r={reg.radius}
+                fill={`url(#heat-grad-${idx})`}
+              />
+            ))}
 
         {/* Attention Map Contours & Weight Grid */}
         {showAttention &&
@@ -287,6 +360,7 @@ export const ExplainabilityViewer: React.FC<ExplainabilityViewerProps> = ({
           </g>
         )}
       </svg>
+      </>
     );
   };
 
@@ -516,9 +590,19 @@ export const ExplainabilityViewer: React.FC<ExplainabilityViewerProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2 text-xs text-amber-800 dark:text-amber-300">
-          <Info className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-          <span>{attributionNotice}</span>
+        <div className="space-y-1 text-xs">
+          <div className="flex items-start gap-2 text-amber-800 dark:text-amber-300">
+            <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" aria-hidden="true" />
+            <span>
+              {attributionNotice ||
+                "The highlighted regions indicate areas that influenced the model's prediction. This visualization is an AI explanation aid and is not clinical proof."}
+            </span>
+          </div>
+          {explainabilityMethod && (
+            <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 pl-5">
+              Method: {pixelHeatmapUrl ? 'Computed 24×24 Pixel Saliency Map (Green-Channel & Contrast)' : explainabilityMethod}
+            </p>
+          )}
         </div>
       </div>
     </div>

@@ -48,7 +48,7 @@ const MODEL_CARD_FIELDS = [
   {
     field: 'Explainability method',
     value:
-      'Simulated spatial saliency & feature decomposition in Prototype Mode; supports external Grad-CAM / attention rollout attribution payloads when ML_BACKEND_URL is configured.',
+      'On-device 24×24 green-channel gradient & lesion contrast pixel saliency in Prototype Mode (transparently distinguished from CNN gradient Grad-CAM); supports external Grad-CAM payloads when ML_BACKEND_URL is configured.',
   },
 ];
 
@@ -105,22 +105,26 @@ export const AboutPage: React.FC = () => {
         </div>
 
         <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed max-w-3xl">
-          IRIDEON separates visual inspection from model execution via a clean TypeScript service abstraction (<code className="font-mono text-cyan-700 dark:text-cyan-400">analyzeRetinalImage()</code>) backed by Express API routes. Setting <code className="font-mono text-cyan-700 dark:text-cyan-400">ML_BACKEND_URL</code> connects a Python PyTorch/FastAPI Grad-CAM service without modifying frontend components.
+          IRIDEON separates visual inspection from model execution via a clean TypeScript service abstraction (<code className="font-mono text-cyan-700 dark:text-cyan-400">analyzeRetinalImage()</code>) backed by Express API routes. Setting <code className="font-mono text-cyan-700 dark:text-cyan-400">ML_BACKEND_URL</code> connects a Python PyTorch/FastAPI Grad-CAM service without modifying frontend components, while offline browser screening persists records in local storage until synchronized.
         </p>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs font-mono">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 text-xs font-mono">
           {[
             {
               ep: 'POST /api/image-quality',
-              desc: 'Magic-byte, dimension & pixel quality verification',
+              desc: 'Quality gate & pixel suitability verification',
             },
             {
               ep: 'POST /api/analyze',
-              desc: 'Modular RetinalModelAdapter inference & XAI payload',
+              desc: 'Quality-gated inference, entropy & XAI payload',
+            },
+            {
+              ep: 'POST /api/sync-records',
+              desc: 'Prototype offline queue sync acknowledgment',
             },
             {
               ep: 'POST /api/explain',
-              desc: 'Server-side Gemini Retina Explain assistant',
+              desc: 'Server-side Gemini IRIDEON Doubt Clarifier',
             },
             {
               ep: 'POST /api/report',

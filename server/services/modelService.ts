@@ -49,27 +49,74 @@ function scoreToStatus(score: number): 'Excellent' | 'Good' | 'Acceptable' | 'Lo
   return 'Poor';
 }
 
+export function computeNormalizedEntropy(distribution: SeverityProbability[]): number {
+  const total = distribution.reduce((sum, item) => sum + Math.max(0, item.probability), 0);
+  if (total <= 0) return 100;
+  let entropy = 0;
+  for (const item of distribution) {
+    const p = Math.max(0, item.probability) / total;
+    if (p > 0) {
+      entropy -= p * Math.log2(p);
+    }
+  }
+  const maxEntropy = Math.log2(Math.max(2, distribution.length));
+  return Math.round(clamp((entropy / maxEntropy) * 100, 0, 100));
+}
+
+export function evaluateReliability(
+  uncertainty: UncertaintyLevel,
+  entropyScore: number,
+  qualitySuitable: boolean
+): {
+  uncertainty: UncertaintyLevel;
+  reliabilityStatus: 'reliable_screening' | 'uncertain_result' | 'professional_review_required';
+  reliabilityLabel: 'AI Screening Result' | 'AI Uncertain Result' | 'Professional Review Required';
+  reliabilityMessage: string;
+} {
+  if (!qualitySuitable || uncertainty === 'High' || entropyScore >= 68) {
+    return {
+      uncertainty: 'High',
+      reliabilityStatus: 'professional_review_required',
+      reliabilityLabel: 'Professional Review Required',
+      reliabilityMessage: 'AI unable to provide a reliable screening result. Professional review required.',
+    };
+  }
+  if (uncertainty === 'Moderate' || entropyScore >= 42) {
+    return {
+      uncertainty: 'Moderate',
+      reliabilityStatus: 'uncertain_result',
+      reliabilityLabel: 'AI Uncertain Result',
+      reliabilityMessage:
+        'Prototype uncertainty is moderate due to overlapping severity probabilities or domain shift. Specialist review is recommended.',
+    };
+  }
+  return {
+    uncertainty: 'Low',
+    reliabilityStatus: 'reliable_screening',
+    reliabilityLabel: 'AI Screening Result',
+    reliabilityMessage:
+      'Prototype screening signal is consistent within expected visual bounds. Screening support — not a standalone diagnosis.',
+  };
+}
+
 export function evaluateImageQuality(
   info: { width: number; height: number; mimeType: string },
   stats?: ClientPixelStats
 ): ImageQualityMetrics {
-  // Derive deterministic pixel quality metrics if client stats provided, else baseline resolution heuristic
   const brightnessScore = stats
-    ? Math.round(
-        clamp(100 - Math.abs(stats.meanBrightness - 102) * 1.15, 22, 96)
-      )
+    ? Math.round(clamp(100 - Math.abs(stats.meanBrightness - 102) * 1.15, 10, 96))
     : 82;
 
   const contrastScore = stats
-    ? Math.round(clamp((stats.contrastStdDev / 52) * 90, 20, 95))
+    ? Math.round(clamp((stats.contrastStdDev / 52) * 90, 10, 95))
     : 80;
 
   const sharpnessScore = stats
-    ? Math.round(clamp(stats.edgeSharpness, 18, 97))
+    ? Math.round(clamp(stats.edgeSharpness, 8, 97))
     : clamp(Math.round((Math.min(info.width, info.height) / 1024) * 85), 40, 92);
 
   const fovScore = stats
-    ? Math.round(clamp(stats.centerToEdgeRatio >= 1.15 ? 88 : 58, 28, 96))
+    ? Math.round(clamp(stats.centerToEdgeRatio >= 1.15 ? 88 : stats.centerToEdgeRatio >= 1.03 ? 62 : 26, 15, 96))
     : 86;
 
   const retinalVisScore = Math.round(
@@ -78,27 +125,55 @@ export function evaluateImageQuality(
         contrastScore * 0.3 +
         sharpnessScore * 0.25 +
         (stats ? stats.redChannelDominance * 100 * 0.15 : 12),
-      20,
+      12,
       96
     )
   );
 
-  const artifactScore = stats ? Math.round(clamp(stats.artifactScore, 25, 96)) : 84;
+  const artifactScore = stats ? Math.round(clamp(stats.artifactScore, 15, 96)) : 84;
+
+  const unsuitableReasons: string[] = [];
+  if (stats) {
+    if (stats.edgeSharpness < 32) unsuitableReasons.push('Image too blurry');
+    if (stats.meanBrightness < 38) unsuitableReasons.push('Image too dark');
+    if (stats.meanBrightness > 212) unsuitableReasons.push('Image too bright');
+    if (stats.contrastStdDev < 18) unsuitableReasons.push('Low contrast');
+    if (stats.centerToEdgeRatio < 1.04 || stats.redChannelDominance < 0.28) {
+      unsuitableReasons.push('Retina not sufficiently visible');
+    }
+    if (stats.artifactScore < 45) unsuitableReasons.push('Excessive glare or artifacts');
+  } else if (Math.min(info.width, info.height) < 200) {
+    unsuitableReasons.push('Image too blurry');
+  }
 
   const composite =
     (brightnessScore + contrastScore + sharpnessScore + fovScore + retinalVisScore + artifactScore) / 6;
 
   const overall: 'Good' | 'Acceptable' | 'Poor' =
-    composite >= 72 && sharpnessScore >= 55 && retinalVisScore >= 55
-      ? 'Good'
-      : composite >= 50 && sharpnessScore >= 38
-        ? 'Acceptable'
-        : 'Poor';
+    unsuitableReasons.length > 0
+      ? 'Poor'
+      : composite >= 72 && sharpnessScore >= 55 && retinalVisScore >= 55
+        ? 'Good'
+        : composite >= 50 && sharpnessScore >= 36
+          ? 'Acceptable'
+          : 'Poor';
 
-  const warning =
-    overall === 'Poor'
-      ? 'Analysis may be unreliable because the uploaded image quality is insufficient.'
-      : null;
+  if (overall === 'Poor' && unsuitableReasons.length === 0) {
+    unsuitableReasons.push('Low overall retinal clarity');
+  }
+
+  const suitable = unsuitableReasons.length === 0 && overall !== 'Poor';
+  const suitabilityStatus = suitable ? 'Suitable for screening' : 'Unsuitable';
+  const suitabilityMessage = suitable
+    ? 'Image suitable for AI screening'
+    : 'Image quality is insufficient. Please capture/upload another retinal image.';
+  const actionRequired = suitable
+    ? null
+    : 'Capture or upload a clearer, properly illuminated retinal fundus image.';
+
+  const warning = suitable
+    ? null
+    : `${suitabilityMessage} Detected issue(s): ${unsuitableReasons.join(', ')}.`;
 
   return {
     brightness: { label: 'Brightness', score: brightnessScore, status: scoreToStatus(brightnessScore) },
@@ -113,9 +188,14 @@ export function evaluateImageQuality(
     artifacts: {
       label: 'Artifacts',
       score: artifactScore,
-      status: artifactScore >= 75 ? 'Low' as unknown as 'Good' : scoreToStatus(artifactScore),
+      status: artifactScore >= 75 ? ('Low' as unknown as 'Good') : scoreToStatus(artifactScore),
     },
     overall,
+    suitable,
+    suitabilityStatus,
+    suitabilityMessage,
+    unsuitableReasons,
+    actionRequired,
     warning,
     dimensions: { width: info.width, height: info.height },
     mimeType: info.mimeType,
@@ -152,6 +232,11 @@ const DEMO_CASES: Record<
       retinalVisibility: { label: 'Retinal Visibility', score: 95, status: 'Excellent' },
       artifacts: { label: 'Artifacts', score: 92, status: 'Good' },
       overall: 'Good',
+      suitable: true,
+      suitabilityStatus: 'Suitable for screening',
+      suitabilityMessage: 'Image suitable for AI screening',
+      unsuitableReasons: [],
+      actionRequired: null,
       warning: null,
       dimensions: { width: 768, height: 768 },
       mimeType: 'image/png',
@@ -352,6 +437,11 @@ const DEMO_CASES: Record<
       retinalVisibility: { label: 'Retinal Visibility', score: 87, status: 'Good' },
       artifacts: { label: 'Artifacts', score: 84, status: 'Good' },
       overall: 'Good',
+      suitable: true,
+      suitabilityStatus: 'Suitable for screening',
+      suitabilityMessage: 'Image suitable for AI screening',
+      unsuitableReasons: [],
+      actionRequired: null,
       warning: null,
       dimensions: { width: 768, height: 768 },
       mimeType: 'image/png',
@@ -553,6 +643,11 @@ const DEMO_CASES: Record<
       retinalVisibility: { label: 'Retinal Visibility', score: 79, status: 'Good' },
       artifacts: { label: 'Artifacts', score: 76, status: 'Good' },
       overall: 'Good',
+      suitable: true,
+      suitabilityStatus: 'Suitable for screening',
+      suitabilityMessage: 'Image suitable for AI screening',
+      unsuitableReasons: [],
+      actionRequired: null,
       warning: null,
       dimensions: { width: 768, height: 768 },
       mimeType: 'image/png',
@@ -1004,6 +1099,12 @@ class DemoEducationalModelAdapter implements RetinalModelAdapter {
       const detectedCount = demo.detectedFeatures.filter((f) => f.detected).length;
 
       const extraData = buildSystemicAndProliferationData(demo.prediction);
+      const entropyScore = computeNormalizedEntropy(demo.severityDistribution);
+      const reliability = evaluateReliability(
+        demo.uncertainty,
+        entropyScore,
+        demo.quality.suitable
+      );
 
       return {
         caseId,
@@ -1013,7 +1114,11 @@ class DemoEducationalModelAdapter implements RetinalModelAdapter {
         demoLabel: demo.demoLabel,
         prediction: demo.prediction,
         confidence: demo.confidence,
-        uncertainty: demo.uncertainty,
+        uncertainty: reliability.uncertainty,
+        entropyScore,
+        reliabilityStatus: reliability.reliabilityStatus,
+        reliabilityLabel: reliability.reliabilityLabel,
+        reliabilityMessage: reliability.reliabilityMessage,
         uncertaintyFactors: demo.uncertaintyFactors,
         imageQuality: demo.quality,
         detectedFeatures: demo.detectedFeatures,
@@ -1036,7 +1141,7 @@ class DemoEducationalModelAdapter implements RetinalModelAdapter {
         heatmapData: {
           regions: demo.heatmapRegions,
           attentionGridSummary:
-            'Simulated Grad-CAM-style spatial attribution peaks normalized to [0, 1] over the circular fundus field.',
+            'Prototype spatial activation map normalized to [0, 1] over the circular fundus field. Not generated by a trained clinical Grad-CAM CNN.',
         },
         severityDistribution: demo.severityDistribution,
         systemicEstimates: extraData.systemicEstimates,
@@ -1045,9 +1150,10 @@ class DemoEducationalModelAdapter implements RetinalModelAdapter {
         modelMetadata: {
           modelName: this.adapterName,
           mode: this.mode,
-          attributionNotice: DEMO_ATTRIBUTION_NOTICE,
-          explainabilityMethod: 'Simulated Spatial Attribution & Feature Decomposition (Educational Prototype)',
-          disclaimer: SAFETY_DISCLAIMER,
+          attributionNotice:
+            'The highlighted regions indicate areas that influenced the model’s prediction. This visualization is an AI explanation aid and is not clinical proof.',
+          explainabilityMethod: 'Prototype Spatial Activation & Feature Decomposition (Non-CNN Educational Demo)',
+          disclaimer: `${SAFETY_DISCLAIMER} Screening support — not a standalone diagnosis.`,
         },
       };
     }
@@ -1157,6 +1263,8 @@ class DemoEducationalModelAdapter implements RetinalModelAdapter {
             ];
 
     const extraData = buildSystemicAndProliferationData(prediction);
+    const entropyScore = computeNormalizedEntropy(severityDistribution);
+    const reliability = evaluateReliability(uncertainty, entropyScore, quality.suitable);
 
     return {
       caseId,
@@ -1164,7 +1272,11 @@ class DemoEducationalModelAdapter implements RetinalModelAdapter {
       sourceType: 'upload',
       prediction,
       confidence,
-      uncertainty,
+      uncertainty: reliability.uncertainty,
+      entropyScore,
+      reliabilityStatus: reliability.reliabilityStatus,
+      reliabilityLabel: reliability.reliabilityLabel,
+      reliabilityMessage: reliability.reliabilityMessage,
       uncertaintyFactors: uploadedUncertaintyFactors,
       imageQuality: quality,
       detectedFeatures,
@@ -1172,19 +1284,19 @@ class DemoEducationalModelAdapter implements RetinalModelAdapter {
       evidenceTrail: basePreset.evidenceTrail,
       explanation: {
         summary: isLowQuality
-          ? 'Uploaded image quality was rated Poor, resulting in High uncertainty. Any visual overlays shown are educational demonstration illustrations rather than clinical model predictions.'
-          : 'Your uploaded image passed format, resolution, and pixel quality checks. Because no external clinical ML model is connected, the visualizations below demonstrate the IRIDEON XAI reasoning structure using heuristic image metrics.',
+          ? 'Uploaded image quality was rated Unsuitable, resulting in High uncertainty. Professional review is required before relying on any output.'
+          : 'Your uploaded image passed format, resolution, and pixel quality checks. Because no external CNN Grad-CAM backend is connected, IRIDEON pairs pixel-level green-channel saliency with prototype scoring.',
         reasoningSteps: buildReasoningStages(quality, prediction, confidence, detectedCount),
         limitations: [
-          'Demo explanation visualization — not generated by a validated clinical model.',
+          'Prototype spatial saliency map — connect ML_BACKEND_URL for convolutional Grad-CAM gradients.',
           'Estimated blood sugar, blood pressure, and proliferation levels are educational simulations — not lab tests or clinical diagnoses.',
-          'Uploaded images are processed in-memory for this session and are not stored persistently.',
+          'Uploaded images are processed in-memory/locally and are not stored on a remote clinical server.',
         ],
       },
       heatmapData: {
         regions: basePreset.heatmapRegions,
         attentionGridSummary:
-          'Demo explanation visualization — heuristic spatial attention regions overlaid for educational walkthrough.',
+          'Local green-channel & contrast spatial saliency combined with prototype region priors (not clinical CNN Grad-CAM).',
       },
       severityDistribution,
       systemicEstimates: extraData.systemicEstimates,
@@ -1193,9 +1305,10 @@ class DemoEducationalModelAdapter implements RetinalModelAdapter {
       modelMetadata: {
         modelName: this.adapterName,
         mode: this.mode,
-        attributionNotice: DEMO_ATTRIBUTION_NOTICE,
-        explainabilityMethod: 'Modular Prototype XAI Pipeline (connect ML_BACKEND_URL for live Grad-CAM)',
-        disclaimer: SAFETY_DISCLAIMER,
+        attributionNotice:
+          'The highlighted regions indicate areas that influenced the model’s prediction. This visualization is an AI explanation aid and is not clinical proof.',
+        explainabilityMethod: 'Prototype Pixel Saliency & Entropy-Gated Pipeline (connect ML_BACKEND_URL for live CNN Grad-CAM)',
+        disclaimer: `${SAFETY_DISCLAIMER} Screening support — not a standalone diagnosis.`,
       },
     };
   }
