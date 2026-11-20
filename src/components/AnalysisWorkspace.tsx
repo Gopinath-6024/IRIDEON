@@ -22,6 +22,7 @@ import {
   Send,
   XCircle,
   RotateCcw,
+  Camera,
 } from 'lucide-react';
 import { ExplainabilityViewer, type FocusTarget, type ViewerTab } from './ExplainabilityViewer';
 import { AIReasoningLens } from './AIReasoningLens';
@@ -395,15 +396,20 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
         {/* LEFT COLUMN: Upload, Demo Mode, Image Quality Assessment */}
         <div className="lg:col-span-5 space-y-6">
-          {/* Upload Dropzone */}
+          {/* Upload Dropzone + Adjacent Workflow Switch */}
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-5 space-y-4">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="font-display text-base font-semibold text-slate-900 dark:text-white">
-                Upload Fundus Image
+                Add Retina (Upload Fundus Image)
               </h2>
-              <span className="text-xs font-mono text-slate-500 dark:text-slate-400">
-                JPG · JPEG · PNG
-              </span>
+              <button
+                type="button"
+                onClick={() => onNavigate('webcam-scan')}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#090E1A] hover:border-cyan-500 text-xs font-medium text-cyan-700 dark:text-cyan-400 transition-colors whitespace-nowrap"
+              >
+                <Camera className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Webcam Eye Scan</span>
+              </button>
             </div>
 
             <div
@@ -814,11 +820,27 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
                   <div>
                     <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-slate-500 dark:text-slate-400">
                       <span>Case {analysis.caseId}</span>
+                      {analysis.patientId && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span>Patient {analysis.patientId}</span>
+                        </>
+                      )}
+                      {analysis.eyeLaterality && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span className="text-cyan-700 dark:text-cyan-400 font-semibold">
+                            {analysis.eyeLaterality === 'OD' ? 'Right Eye (OD)' : 'Left Eye (OS)'}
+                          </span>
+                        </>
+                      )}
                       <span aria-hidden="true">·</span>
                       <span>
                         {analysis.sourceType === 'demo'
                           ? 'DEMO / EDUCATIONAL DATA'
-                          : 'Uploaded Image (Prototype Mode)'}
+                          : analysis.acquisitionSource === 'webcam_assisted_device_import'
+                            ? 'Webcam-Assisted Device Import'
+                            : 'Uploaded Image (Prototype Mode)'}
                       </span>
                     </div>
                     <h2 className="font-display text-2xl font-bold text-slate-900 dark:text-white mt-1">

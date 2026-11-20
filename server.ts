@@ -14,9 +14,11 @@ import {
   streamRetinaExplanation,
 } from './server/services/geminiExplainService.ts';
 import type {
+  AcquisitionSource,
   ClientPixelStats,
   DemoCaseId,
   ExplainMode,
+  EyeLaterality,
   ResearcherSession,
   RetinaAnalysisResult,
 } from './src/types/retina.ts';
@@ -123,12 +125,38 @@ app.post('/api/image-quality', (req, res) => {
 // Retinal Analysis endpoint
 app.post('/api/analyze', async (req, res) => {
   try {
-    const { sourceType, demoCaseId, imageDataUrl, pixelStats } = (req.body ?? {}) as {
+    const {
+      sourceType,
+      demoCaseId,
+      imageDataUrl,
+      pixelStats,
+      imageRole,
+      patientId,
+      eyeLaterality,
+      acquisitionSource,
+      deviceLabel,
+      externalEyeReference,
+    } = (req.body ?? {}) as {
       sourceType?: 'demo' | 'upload';
       demoCaseId?: DemoCaseId;
       imageDataUrl?: string;
       pixelStats?: ClientPixelStats;
+      imageRole?: string;
+      patientId?: string;
+      eyeLaterality?: EyeLaterality;
+      acquisitionSource?: AcquisitionSource;
+      deviceLabel?: string;
+      externalEyeReference?: RetinaAnalysisResult['externalEyeReference'];
     };
+
+    // Critical clinical safety guard: external-eye webcam photos must NEVER enter the DR prediction pipeline.
+    if (imageRole === 'external_webcam_reference' || imageRole === 'external_eye') {
+      res.status(400).json({
+        error:
+          'External-eye webcam photographs cannot be analyzed for diabetic retinopathy. Please acquire or import a genuine retinal fundus image.',
+      });
+      return;
+    }
 
     if (sourceType === 'demo') {
       const allowedDemoIds: DemoCaseId[] = ['demo-a', 'demo-b', 'demo-c'];
@@ -162,11 +190,36 @@ app.post('/api/analyze', async (req, res) => {
       return;
     }
 
+    const cleanPatientId =
+      typeof patientId === 'string' && patientId.trim().length > 0
+        ? patientId.trim().slice(0, 48)
+        : undefined;
+    const cleanLaterality: EyeLaterality | undefined =
+      eyeLaterality === 'OD' || eyeLaterality === 'OS' ? eyeLaterality : undefined;
+    const cleanAcqSource: AcquisitionSource | undefined =
+      acquisitionSource === 'webcam_assisted_device_import' ||
+      acquisitionSource === 'fundus_upload'
+        ? acquisitionSource
+        : 'fundus_upload';
+
     const result = await analyzeRetinalImage({
       sourceType: 'upload',
       imageInfo: validation.info,
       pixelStats,
       imageDataUrl,
+      patientId: cleanPatientId,
+      eyeLaterality: cleanLaterality,
+      acquisitionSource: cleanAcqSource,
+      deviceLabel: typeof deviceLabel === 'string' ? deviceLabel.trim().slice(0, 80) : undefined,
+      externalEyeReference: externalEyeReference
+        ? {
+            captureId: String(externalEyeReference.captureId || '').slice(0, 48),
+            eyeLaterality: externalEyeReference.eyeLaterality === 'OS' ? 'OS' : 'OD',
+            capturedAt: String(externalEyeReference.capturedAt || new Date().toISOString()),
+            detectorEngine: String(externalEyeReference.detectorEngine || 'Webcam'),
+            consentConfirmed: Boolean(externalEyeReference.consentConfirmed),
+          }
+        : undefined,
     });
     res.json(result);
   } catch (err) {
@@ -339,6 +392,25 @@ app.post('/api/report', (req, res) => {
       generatedAt: new Date().toISOString(),
       caseId: analysis.caseId,
       patientCaseId: sanitizedCaseTag,
+      patientId: analysis.patientId ?? sanitizedCaseTag,
+      eyeLaterality: analysis.eyeLaterality ?? null,
+      eyeLateralityLabel:
+        analysis.eyeLaterality === 'OD'
+          ? 'Right Eye (OD)'
+          : analysis.eyeLaterality === 'OS'
+            ? 'Left Eye (OS)'
+            : null,
+      acquisitionSource: analysis.acquisitionSource ?? analysis.sourceType,
+      imageMetadata: analysis.imageMetadata ?? null,
+      externalEyeReference: analysis.externalEyeReference
+        ? {
+            captureId: analysis.externalEyeReference.captureId,
+            eyeLaterality: analysis.externalEyeReference.eyeLaterality,
+            capturedAt: analysis.externalEyeReference.capturedAt,
+            detectorEngine: analysis.externalEyeReference.detectorEngine,
+            note: 'External-eye reference only — excluded from DR diagnostic inference.',
+          }
+        : null,
       analyzedAt: analysis.analyzedAt,
       sourceType: analysis.sourceType,
       demoLabel: analysis.demoLabel ?? null,

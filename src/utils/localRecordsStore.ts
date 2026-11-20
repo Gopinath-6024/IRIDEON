@@ -386,6 +386,7 @@ export function buildLocalRecordFromAnalysis(params: {
     recordId: `REC-${analysis.caseId}`,
     patientDemoId:
       params.patientDemoId?.trim() ||
+      analysis.patientId?.trim() ||
       (analysis.sourceType === 'demo'
         ? `DEMO-${(analysis.demoCaseId ?? 'case').toUpperCase()}`
         : `LOCAL-${analysis.caseId.slice(-4)}`),
@@ -396,6 +397,11 @@ export function buildLocalRecordFromAnalysis(params: {
     syncedAt: null,
     riskTier,
     imageThumbnailUrl: thumbnailUrl,
+    externalEyeThumbnailUrl: analysis.externalEyeReference?.thumbnailUrl,
+    eyeLaterality: analysis.eyeLaterality,
+    acquisitionSource:
+      analysis.acquisitionSource ??
+      (analysis.sourceType === 'demo' ? 'demo_synthetic' : 'fundus_upload'),
     analysis,
     doctorReview: reviewData,
   };

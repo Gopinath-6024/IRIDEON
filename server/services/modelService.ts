@@ -1,9 +1,11 @@
 import type {
+  AcquisitionSource,
   ClientPixelStats,
   DemoCaseId,
   DetectedFeature,
   DRGrade,
   EvidenceItem,
+  EyeLaterality,
   FeatureContribution,
   HeatmapRegion,
   ImageQualityMetrics,
@@ -29,6 +31,11 @@ export interface AnalyzeRetinalImageInput {
   imageInfo?: ValidatedImageInfo;
   pixelStats?: ClientPixelStats;
   imageDataUrl?: string;
+  patientId?: string;
+  eyeLaterality?: EyeLaterality;
+  acquisitionSource?: AcquisitionSource;
+  deviceLabel?: string;
+  externalEyeReference?: RetinaAnalysisResult['externalEyeReference'];
 }
 
 export interface RetinalModelAdapter {
@@ -1515,6 +1522,17 @@ class DemoEducationalModelAdapter implements RetinalModelAdapter {
         explainabilityMethod: 'On-Device 24×24 Pixel Saliency & Entropy Gate (connect ML_BACKEND_URL for live CNN Grad-CAM)',
         disclaimer: `${SAFETY_DISCLAIMER} Screening support — not a standalone diagnosis.`,
       },
+      patientId: input.patientId,
+      eyeLaterality: input.eyeLaterality,
+      acquisitionSource: input.acquisitionSource ?? 'fundus_upload',
+      imageMetadata: {
+        width: info.width,
+        height: info.height,
+        mimeType: info.mimeType,
+        fileSizeBytes: info.byteLength,
+        deviceLabel: input.deviceLabel,
+      },
+      externalEyeReference: input.externalEyeReference,
     };
   }
 }
@@ -1557,7 +1575,21 @@ export async function analyzeRetinalImage(
   const externalUrl = process.env.ML_BACKEND_URL?.trim();
   if (externalUrl && input.sourceType === 'upload') {
     const adapter = new ExternalMlModelAdapter(externalUrl);
-    return adapter.analyze(input);
+    const result = await adapter.analyze(input);
+    return {
+      ...result,
+      patientId: input.patientId ?? result.patientId,
+      eyeLaterality: input.eyeLaterality ?? result.eyeLaterality,
+      acquisitionSource: input.acquisitionSource ?? result.acquisitionSource ?? 'fundus_upload',
+      imageMetadata: result.imageMetadata ?? (input.imageInfo ? {
+        width: input.imageInfo.width,
+        height: input.imageInfo.height,
+        mimeType: input.imageInfo.mimeType,
+        fileSizeBytes: input.imageInfo.byteLength,
+        deviceLabel: input.deviceLabel,
+      } : undefined),
+      externalEyeReference: input.externalEyeReference ?? result.externalEyeReference,
+    };
   }
   const demoAdapter = new DemoEducationalModelAdapter();
   return demoAdapter.analyze(input);

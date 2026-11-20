@@ -256,7 +256,8 @@ export const DoctorReviewPage: React.FC<DoctorReviewPageProps> = ({
                         </span>
                       </div>
                       <p className="text-xs font-medium text-slate-800 dark:text-slate-200 truncate">
-                        {rec.analysis.prediction} · {rec.riskTier}
+                        {rec.analysis.prediction}
+                        {rec.eyeLaterality ? ` · ${rec.eyeLaterality}` : ''} · {rec.riskTier}
                       </p>
                       <div className="flex items-center justify-between gap-2 text-[11px] font-mono">
                         <span className={statusTone(rec.doctorReview.reviewStatus)}>
@@ -287,8 +288,11 @@ export const DoctorReviewPage: React.FC<DoctorReviewPageProps> = ({
                 <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
                   <div>
                     <p className="text-xs font-mono text-slate-500 dark:text-slate-400">
-                      Record {activeRecord.recordId} · Patient/Demo ID: {activeRecord.patientDemoId} ·{' '}
-                      {activeRecord.isDemoRecord ? 'Synthetic Demo Record' : 'Session Screening Record'}
+                      Record {activeRecord.recordId} · Patient/Demo ID: {activeRecord.patientDemoId}
+                      {activeRecord.eyeLaterality
+                        ? ` · ${activeRecord.eyeLaterality === 'OD' ? 'Right Eye (OD)' : 'Left Eye (OS)'}`
+                        : ''}{' '}
+                      · {activeRecord.isDemoRecord ? 'Synthetic Demo Record' : 'Session Screening Record'}
                     </p>
                     <h2 className="font-display text-xl font-bold text-slate-900 dark:text-white mt-0.5">
                       Case Inspection & Clinical Decision Support

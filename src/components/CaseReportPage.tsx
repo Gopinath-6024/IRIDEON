@@ -182,10 +182,17 @@ export const CaseReportPage: React.FC<CaseReportPageProps> = ({
           </div>
           <div className="text-left sm:text-right text-xs font-mono text-slate-500 dark:text-slate-400 space-y-1">
             <p>{analysis.modelMetadata.modelName}</p>
+            {analysis.eyeLaterality && (
+              <p className="text-cyan-700 dark:text-cyan-400 font-semibold">
+                Eye: {analysis.eyeLaterality === 'OD' ? 'Right Eye (OD)' : 'Left Eye (OS)'}
+              </p>
+            )}
             <p>
               {analysis.sourceType === 'demo'
                 ? 'DEMO / EDUCATIONAL DATA'
-                : 'Session Uploaded Image'}
+                : analysis.acquisitionSource === 'webcam_assisted_device_import'
+                  ? 'Webcam-Assisted Fundus Acquisition'
+                  : 'Session Uploaded Image'}
             </p>
           </div>
         </div>
@@ -199,10 +206,25 @@ export const CaseReportPage: React.FC<CaseReportPageProps> = ({
           </div>
         </div>
 
-        {/* Core Output Grid + Dual Visual Preview (Original + Model Attention) */}
+        {/* Core Output Grid + Visual Previews (Original + Model Attention + Optional External-Eye Reference) */}
         <div className="grid grid-cols-1 sm:grid-cols-12 gap-6 items-center">
           {imageUrl && (
-            <div className="sm:col-span-5 grid grid-cols-2 gap-2.5">
+            <div className={`sm:col-span-5 grid ${analysis.externalEyeReference?.thumbnailUrl ? 'grid-cols-3' : 'grid-cols-2'} gap-2.5`}>
+              {analysis.externalEyeReference?.thumbnailUrl && (
+                <div className="space-y-1">
+                  <div className="rounded-lg border border-amber-300 dark:border-amber-800 bg-black aspect-square overflow-hidden">
+                    <img
+                      src={analysis.externalEyeReference.thumbnailUrl}
+                      alt="External eye reference (not analyzed)"
+                      referrerPolicy="no-referrer"
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                  <p className="text-[10px] font-mono text-center text-amber-700 dark:text-amber-400">
+                    External Eye ({analysis.externalEyeReference.eyeLaterality})
+                  </p>
+                </div>
+              )}
               <div className="space-y-1">
                 <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-black aspect-square overflow-hidden">
                   <img
@@ -213,7 +235,7 @@ export const CaseReportPage: React.FC<CaseReportPageProps> = ({
                   />
                 </div>
                 <p className="text-[10px] font-mono text-center text-slate-500 dark:text-slate-400">
-                  Original Input
+                  Original Fundus
                 </p>
               </div>
               <div className="space-y-1">

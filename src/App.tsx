@@ -16,6 +16,7 @@ import { DoctorReviewPage } from './components/DoctorReviewPage';
 import { SmartReferralPage } from './components/SmartReferralPage';
 import { RetinaTimeMachinePage } from './components/RetinaTimeMachinePage';
 import { FairEyePage } from './components/FairEyePage';
+import { WebcamEyeScanPage } from './components/WebcamEyeScanPage';
 import {
   computeClientPixelStats,
   generateSyntheticFundusDataUrl,
@@ -35,6 +36,7 @@ import {
   saveLocalReferrals,
 } from './utils/localRecordsStore';
 import type {
+  AcquisitionSource,
   AppPage,
   ChatMessage,
   ClientPixelStats,
@@ -42,6 +44,7 @@ import type {
   DemoCaseId,
   DoctorReviewData,
   ExplainMode,
+  EyeLaterality,
   ImageQualityMetrics,
   LocalScreeningRecord,
   ReferralRecord,
@@ -541,7 +544,158 @@ export default function App() {
     setErrorMsg(null);
   }, []);
 
-  // Run Analysis on Uploaded Image (Hard Quality Gate + Pixel Saliency + Offline Fallback)
+  // Unified Shared Fundus Inference Pipeline (reused by both Add Retina and Webcam Eye Scan)
+  const executeFundusInferencePipeline = useCallback(
+    async (params: {
+      fundusImageUrl: string;
+      stats?: ClientPixelStats;
+      patientId?: string;
+      eyeLaterality?: EyeLaterality;
+      acquisitionSource?: AcquisitionSource;
+      deviceLabel?: string;
+      externalEyeReference?: RetinaAnalysisResult['externalEyeReference'];
+    }) => {
+      if (analysisAbortRef.current) {
+        analysisAbortRef.current.abort();
+      }
+      const userController = new AbortController();
+      analysisAbortRef.current = userController;
+
+      setActiveImageUrl(params.fundusImageUrl);
+      if (params.stats) setUploadedPixelStats(params.stats);
+      setIsAnalyzing(true);
+      setErrorMsg(null);
+      setAnalysisStageLabel('Validating image...');
+
+      try {
+        setAnalysisStageLabel('Assessing image quality...');
+        const stats = params.stats ?? (await computeClientPixelStats(params.fundusImageUrl));
+        if (userController.signal.aborted) return;
+
+        setAnalysisStageLabel('Running DR analysis...');
+        let result: RetinaAnalysisResult;
+        let ranOffline = isOffline;
+
+        if (isOffline) {
+          result = await runOfflineLocalScreening({
+            sourceType: 'upload',
+            imageDataUrl: params.fundusImageUrl,
+            stats,
+          });
+        } else {
+          try {
+            const timer = setTimeout(() => userController.abort(), 16000);
+
+            const res = await fetch('/api/analyze', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                sourceType: 'upload',
+                imageRole: 'retinal_fundus',
+                imageDataUrl: params.fundusImageUrl,
+                pixelStats: stats,
+                patientId: params.patientId,
+                eyeLaterality: params.eyeLaterality,
+                acquisitionSource: params.acquisitionSource ?? 'fundus_upload',
+                deviceLabel: params.deviceLabel,
+                externalEyeReference: params.externalEyeReference,
+              }),
+              signal: userController.signal,
+            });
+            clearTimeout(timer);
+
+            const data = (await res.json()) as RetinaAnalysisResult & {
+              error?: string;
+              imageQuality?: ImageQualityMetrics;
+            };
+
+            if (res.status === 422) {
+              if (data.imageQuality) setPreQuality(data.imageQuality);
+              throw new Error(
+                data.error ??
+                  'Image quality is insufficient. Please capture/upload another retinal image.'
+              );
+            }
+
+            if (!res.ok || !data.prediction) {
+              throw new Error(data.error ?? 'Analysis failed to produce an output.');
+            }
+            result = data;
+          } catch (networkErr) {
+            if (userController.signal.aborted) {
+              throw networkErr;
+            }
+            if (
+              networkErr instanceof Error &&
+              networkErr.message.includes('Image quality is insufficient')
+            ) {
+              throw networkErr;
+            }
+            console.error('Server analyze fallback to offline local screening:', networkErr);
+            ranOffline = true;
+            result = await runOfflineLocalScreening({
+              sourceType: 'upload',
+              imageDataUrl: params.fundusImageUrl,
+              stats,
+            });
+          }
+        }
+
+        if (userController.signal.aborted) return;
+        setAnalysisStageLabel('Generating explanation...');
+        const saliency = await computePixelSaliencyMap(params.fundusImageUrl);
+        if (userController.signal.aborted) return;
+
+        // Attach computed 24x24 pixel saliency grid + operator acquisition metadata
+        result = {
+          ...result,
+          patientId: params.patientId ?? result.patientId,
+          eyeLaterality: params.eyeLaterality ?? result.eyeLaterality,
+          acquisitionSource:
+            params.acquisitionSource ?? result.acquisitionSource ?? 'fundus_upload',
+          imageMetadata: result.imageMetadata
+            ? {
+                ...result.imageMetadata,
+                deviceLabel: params.deviceLabel ?? result.imageMetadata.deviceLabel,
+              }
+            : undefined,
+          externalEyeReference: params.externalEyeReference ?? result.externalEyeReference,
+          heatmapData: {
+            ...result.heatmapData,
+            pixelGrid: saliency.grid.length > 0 ? saliency.grid : result.heatmapData.pixelGrid,
+            regions:
+              saliency.peaks.length > 0 ? saliency.peaks : result.heatmapData.regions,
+          },
+        };
+
+        setPreQuality(result.imageQuality);
+        setAnalysis(result);
+        await recordCompletedAnalysis(result, params.fundusImageUrl, ranOffline);
+        setAnalysisStageLabel('Analysis complete');
+      } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') {
+          setErrorMsg('Analysis stopped or timed out. Please try again.');
+        } else if (
+          err instanceof Error &&
+          err.message.includes('Image quality is insufficient')
+        ) {
+          setErrorMsg(err.message);
+        } else {
+          console.error('Fundus analysis error:', err);
+          setErrorMsg('IRIDEON could not complete the analysis. Please try again.');
+        }
+      } finally {
+        if (analysisAbortRef.current === userController) {
+          analysisAbortRef.current = null;
+        }
+        setIsAnalyzing(false);
+        setTimeout(() => setAnalysisStageLabel(null), 1200);
+      }
+    },
+    [isOffline, recordCompletedAnalysis]
+  );
+
+  // Run Analysis on Uploaded Image (Hard Quality Gate + Shared Inference Pipeline)
   const handleRunAnalysis = async () => {
     if (!activeImageUrl) return;
     if (preQuality && !preQuality.suitable) {
@@ -551,122 +705,11 @@ export default function App() {
       return;
     }
 
-    if (analysisAbortRef.current) {
-      analysisAbortRef.current.abort();
-    }
-    const userController = new AbortController();
-    analysisAbortRef.current = userController;
-
-    setIsAnalyzing(true);
-    setErrorMsg(null);
-    setAnalysisStageLabel('Validating image...');
-
-    try {
-      setAnalysisStageLabel('Assessing image quality...');
-      const stats = uploadedPixelStats ?? (await computeClientPixelStats(activeImageUrl));
-      if (userController.signal.aborted) return;
-
-      setAnalysisStageLabel('Running DR analysis...');
-      let result: RetinaAnalysisResult;
-      let ranOffline = isOffline;
-
-      if (isOffline) {
-        result = await runOfflineLocalScreening({
-          sourceType: 'upload',
-          imageDataUrl: activeImageUrl,
-          stats,
-        });
-      } else {
-        try {
-          const timer = setTimeout(() => userController.abort(), 16000);
-
-          const res = await fetch('/api/analyze', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              sourceType: 'upload',
-              imageDataUrl: activeImageUrl,
-              pixelStats: stats,
-            }),
-            signal: userController.signal,
-          });
-          clearTimeout(timer);
-
-          const data = (await res.json()) as RetinaAnalysisResult & {
-            error?: string;
-            imageQuality?: ImageQualityMetrics;
-          };
-
-          if (res.status === 422) {
-            if (data.imageQuality) setPreQuality(data.imageQuality);
-            throw new Error(
-              data.error ??
-                'Image quality is insufficient. Please capture/upload another retinal image.'
-            );
-          }
-
-          if (!res.ok || !data.prediction) {
-            throw new Error(data.error ?? 'Analysis failed to produce an output.');
-          }
-          result = data;
-        } catch (networkErr) {
-          if (userController.signal.aborted) {
-            throw networkErr;
-          }
-          if (
-            networkErr instanceof Error &&
-            networkErr.message.includes('Image quality is insufficient')
-          ) {
-            throw networkErr;
-          }
-          console.error('Server analyze fallback to offline local screening:', networkErr);
-          ranOffline = true;
-          result = await runOfflineLocalScreening({
-            sourceType: 'upload',
-            imageDataUrl: activeImageUrl,
-            stats,
-          });
-        }
-      }
-
-      if (userController.signal.aborted) return;
-      setAnalysisStageLabel('Generating explanation...');
-      const saliency = await computePixelSaliencyMap(activeImageUrl);
-      if (userController.signal.aborted) return;
-
-      // Attach computed 24x24 pixel saliency grid so Retina Map is genuinely pixel-derived
-      result = {
-        ...result,
-        heatmapData: {
-          ...result.heatmapData,
-          pixelGrid: saliency.grid.length > 0 ? saliency.grid : result.heatmapData.pixelGrid,
-          regions:
-            saliency.peaks.length > 0 ? saliency.peaks : result.heatmapData.regions,
-        },
-      };
-
-      setAnalysis(result);
-      await recordCompletedAnalysis(result, activeImageUrl, ranOffline);
-      setAnalysisStageLabel('Analysis complete');
-    } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        setErrorMsg('Analysis stopped or timed out. Please try again.');
-      } else if (
-        err instanceof Error &&
-        err.message.includes('Image quality is insufficient')
-      ) {
-        setErrorMsg(err.message);
-      } else {
-        console.error('Upload analysis error:', err);
-        setErrorMsg('IRIDEON could not complete the analysis. Please try again.');
-      }
-    } finally {
-      if (analysisAbortRef.current === userController) {
-        analysisAbortRef.current = null;
-      }
-      setIsAnalyzing(false);
-      setTimeout(() => setAnalysisStageLabel(null), 1200);
-    }
+    await executeFundusInferencePipeline({
+      fundusImageUrl: activeImageUrl,
+      stats: uploadedPixelStats ?? undefined,
+      acquisitionSource: 'fundus_upload',
+    });
   };
 
   // Run Synthetic Demo Case
@@ -962,6 +1005,48 @@ export default function App() {
             isSyncing={isSyncing}
             syncBanner={syncBanner}
             onSyncQueuedRecords={handleSyncQueuedRecords}
+            chatMessages={chatMessages}
+            chatLoading={chatLoading}
+            onSendChatQuestion={handleSendChatQuestion}
+            onClearChat={handleClearChat}
+          />
+        )}
+
+        {currentPage === 'webcam-scan' && (
+          <WebcamEyeScanPage
+            localRecords={localRecords}
+            analysis={analysis}
+            activeFundusImageUrl={activeImageUrl}
+            isAnalyzing={isAnalyzing}
+            analysisStageLabel={analysisStageLabel}
+            errorMsg={errorMsg}
+            isOffline={isOffline}
+            defaultExplainMode={defaultExplainMode}
+            colormap={colormap}
+            activeDoctorReview={activeLocalRecord?.doctorReview ?? null}
+            onSaveClinicianDecision={handleSaveClinicianDecision}
+            onAnalyzeWebcamWorkflowFundus={async ({
+              fundusImageUrl,
+              pixelStats,
+              patientId,
+              eyeLaterality,
+              deviceLabel,
+              externalEyeReference,
+            }) => {
+              await executeFundusInferencePipeline({
+                fundusImageUrl,
+                stats: pixelStats,
+                patientId,
+                eyeLaterality,
+                acquisitionSource: 'webcam_assisted_device_import',
+                deviceLabel,
+                externalEyeReference,
+              });
+            }}
+            onCancelAnalysis={handleCancelAnalysis}
+            onNavigate={navigate}
+            onSendToDoctorReview={openCurrentAnalysisInDoctorReview}
+            onCreateReferral={openCurrentAnalysisInReferral}
             chatMessages={chatMessages}
             chatLoading={chatLoading}
             onSendChatQuestion={handleSendChatQuestion}

@@ -12,6 +12,7 @@ import {
   ChevronDown,
   WifiOff,
   CloudUpload,
+  Camera,
 } from 'lucide-react';
 import type { AppPage, ResearcherSession, ThemeMode } from '../types/retina';
 
@@ -27,9 +28,10 @@ interface NavbarProps {
   onSyncQueuedRecords: () => void;
 }
 
-const PRIMARY_NAV: { id: AppPage; label: string }[] = [
+const PRIMARY_NAV: { id: AppPage; label: string; icon?: 'camera' }[] = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'analyze', label: 'Analyze' },
+  { id: 'webcam-scan', label: 'Webcam Eye Scan', icon: 'camera' },
   { id: 'time-machine', label: 'Time Machine' },
   { id: 'doctor-review', label: 'Doctor Review' },
   { id: 'referrals', label: 'Referrals' },
@@ -87,7 +89,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {/* Zone 2: Clean Typography Nav Links */}
           <nav
-            className="hidden lg:flex items-center gap-5 text-sm font-medium"
+            className="hidden lg:flex items-center gap-3.5 xl:gap-5 text-xs xl:text-sm font-medium"
             aria-label="Primary Navigation"
           >
             {PRIMARY_NAV.map((item) => {
@@ -97,13 +99,16 @@ export const Navbar: React.FC<NavbarProps> = ({
                   key={item.id}
                   type="button"
                   onClick={() => handleNav(item.id)}
-                  className={`whitespace-nowrap shrink-0 py-1.5 border-b-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 rounded-t-sm ${
+                  className={`inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 py-1.5 border-b-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 rounded-t-sm ${
                     active
                       ? 'border-cyan-600 dark:border-cyan-400 text-slate-900 dark:text-white font-semibold'
                       : 'border-transparent text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:border-slate-300 dark:hover:border-slate-700'
                   }`}
                 >
-                  {item.label}
+                  {item.icon === 'camera' && (
+                    <Camera className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400 shrink-0" aria-hidden="true" />
+                  )}
+                  <span>{item.label}</span>
                 </button>
               );
             })}
@@ -243,13 +248,16 @@ export const Navbar: React.FC<NavbarProps> = ({
                   key={item.id}
                   type="button"
                   onClick={() => handleNav(item.id)}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
                     active
                       ? 'bg-cyan-50 dark:bg-cyan-950/50 text-cyan-800 dark:text-cyan-200 font-semibold'
                       : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/60'
                   }`}
                 >
-                  {item.label}
+                  {'icon' in item && item.icon === 'camera' && (
+                    <Camera className="w-4 h-4 text-cyan-600 dark:text-cyan-400 shrink-0" aria-hidden="true" />
+                  )}
+                  <span>{item.label}</span>
                 </button>
               );
             })}

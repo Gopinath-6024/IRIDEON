@@ -14,6 +14,11 @@ export type ImportanceLevel = 'Low' | 'Medium' | 'High';
 export type DemoCaseId = 'demo-a' | 'demo-b' | 'demo-c';
 export type ExplainMode = 'beginner' | 'technical';
 export type ThemeMode = 'light' | 'dark' | 'system';
+export type EyeLaterality = 'OD' | 'OS';
+export type AcquisitionSource =
+  | 'fundus_upload'
+  | 'webcam_assisted_device_import'
+  | 'demo_synthetic';
 
 export type ReliabilityStatus =
   | 'reliable_screening'
@@ -43,6 +48,7 @@ export type AppPage =
   | 'landing'
   | 'dashboard'
   | 'analyze'
+  | 'webcam-scan'
   | 'explainability'
   | 'feature-explorer'
   | 'comparison'
@@ -240,6 +246,36 @@ export interface RetinaAnalysisResult {
   decisionSupport?: DecisionSupportSummary;
   modelMetadata: ModelMetadata;
   offlineGenerated?: boolean;
+  patientId?: string;
+  eyeLaterality?: EyeLaterality;
+  acquisitionSource?: AcquisitionSource;
+  imageMetadata?: {
+    width: number;
+    height: number;
+    mimeType: string;
+    fileSizeBytes?: number;
+    deviceLabel?: string;
+  };
+  externalEyeReference?: {
+    captureId: string;
+    eyeLaterality: EyeLaterality;
+    capturedAt: string;
+    detectorEngine: string;
+    consentConfirmed: boolean;
+    thumbnailUrl?: string;
+  };
+}
+
+export interface ExternalEyeCapture {
+  captureId: string;
+  imageDataUrl: string;
+  eyeLaterality: EyeLaterality;
+  capturedAt: string;
+  patientId: string;
+  sourceType: 'external_webcam_reference';
+  detectorEngine: string;
+  alignmentScore: number;
+  consentConfirmed: boolean;
 }
 
 export interface ClientPixelStats {
@@ -293,6 +329,9 @@ export interface LocalScreeningRecord {
   syncedAt: string | null;
   riskTier: 'Low Risk' | 'Moderate Risk' | 'High Risk' | 'Uncertain / Review Required';
   imageThumbnailUrl: string;
+  externalEyeThumbnailUrl?: string;
+  eyeLaterality?: EyeLaterality;
+  acquisitionSource?: AcquisitionSource;
   analysis: RetinaAnalysisResult;
   doctorReview: DoctorReviewData;
 }
