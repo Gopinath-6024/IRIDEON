@@ -6,6 +6,9 @@ export type DRGrade =
   | 'Proliferative';
 
 export type QualityRating = 'Good' | 'Acceptable' | 'Poor';
+export type QualityTierLabel = 'Good' | 'Needs better image' | 'Invalid image';
+export type DecisionRiskLevel = 'LOW RISK' | 'REVIEW RECOMMENDED' | 'URGENT REVIEW';
+export type ClinicianDecision = 'Agree with AI' | 'Needs review' | 'Disagree with AI';
 export type UncertaintyLevel = 'Low' | 'Moderate' | 'High';
 export type ImportanceLevel = 'Low' | 'Medium' | 'High';
 export type DemoCaseId = 'demo-a' | 'demo-b' | 'demo-c';
@@ -67,6 +70,9 @@ export interface ImageQualityMetrics {
   retinalVisibility: ImageQualitySubMetric;
   artifacts: ImageQualitySubMetric;
   overall: QualityRating;
+  qualityTier?: QualityTierLabel;
+  qualityBadgeText?: '✓ Good' | '⚠ Needs better image' | '✕ Invalid image';
+  assessmentLabel?: string;
   suitable: boolean;
   suitabilityStatus: 'Suitable for screening' | 'Unsuitable';
   suitabilityMessage: string;
@@ -78,6 +84,13 @@ export interface ImageQualityMetrics {
     height: number;
   };
   mimeType: string;
+}
+
+export interface DecisionSupportSummary {
+  riskLevel: DecisionRiskLevel;
+  interpretation: string;
+  suggestedAction: string;
+  disclaimer: string;
 }
 
 export interface DetectedFeature {
@@ -224,6 +237,7 @@ export interface RetinaAnalysisResult {
   systemicEstimates: SystemicEstimates;
   proliferationGrading: ProliferationGrading;
   symptoms: SymptomsBreakdown;
+  decisionSupport?: DecisionSupportSummary;
   modelMetadata: ModelMetadata;
   offlineGenerated?: boolean;
 }
@@ -236,6 +250,8 @@ export interface ClientPixelStats {
   edgeSharpness: number; // 0-100
   centerToEdgeRatio: number;
   redChannelDominance: number; // 0-1
+  greenChannelDominance?: number; // 0-1
+  blueChannelDominance?: number; // 0-1
   artifactScore: number; // 0-100 (higher = fewer artifacts)
 }
 
@@ -259,6 +275,7 @@ export interface ChatMessage {
 
 export interface DoctorReviewData {
   reviewStatus: DoctorReviewStatus;
+  clinicianDecision?: ClinicianDecision | null;
   reviewerName: string;
   reviewNotes: string;
   followUpDecision: string;

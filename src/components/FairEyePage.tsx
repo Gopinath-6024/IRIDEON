@@ -17,293 +17,123 @@ import {
   Legend,
 } from 'recharts';
 import { evaluateClientQualityGate } from '../utils/retinalSaliency';
-import type {
-  ClientPixelStats,
-  FairEyeEvaluationReport,
-  FairEyeGroupResult,
-  LocalScreeningRecord,
-} from '../types/retina';
+import type { ClientPixelStats, LocalScreeningRecord } from '../types/retina';
 
 interface FairEyePageProps {
   records: LocalScreeningRecord[];
 }
 
-interface SyntheticEvalSample {
-  groupId: string;
-  groupName: string;
-  datasetSource: string;
-  groundTruthReferable: boolean;
-  stats: ClientPixelStats;
-  lesionSignalStrength: number; // simulated visual lesion contrast [0..1]
+interface QualityStressCohort {
+  cohortId: string;
+  cohortName: string;
+  description: string;
+  samples: ClientPixelStats[];
 }
 
-function buildSyntheticBenchmarkSuite(): SyntheticEvalSample[] {
-  const samples: SyntheticEvalSample[] = [];
-
-  const pushGroup = (
-    groupId: string,
-    groupName: string,
-    datasetSource: string,
+function buildQualityStressCohorts(): QualityStressCohort[] {
+  const mkStats = (
     n: number,
-    posRatio: number,
     brightnessBase: number,
     contrastBase: number,
     sharpnessBase: number,
-    fovRatio: number,
-    redDom: number,
-    signalAttenuation: number
-  ) => {
-    const posCount = Math.round(n * posRatio);
+    fovBase: number,
+    redDom: number
+  ): ClientPixelStats[] => {
+    const out: ClientPixelStats[] = [];
     for (let i = 0; i < n; i++) {
-      const isPos = i < posCount;
-      const jitter = ((i * 37) % 11) - 5; // deterministic variation [-5..+5]
-      const rawSignal = isPos ? 0.68 - (i % 4) * 0.08 : 0.22 + (i % 5) * 0.07;
-      samples.push({
-        groupId,
-        groupName,
-        datasetSource,
-        groundTruthReferable: isPos,
-        stats: {
-          width: 768,
-          height: 768,
-          meanBrightness: Math.max(20, Math.min(230, brightnessBase + jitter * 1.4)),
-          contrastStdDev: Math.max(12, Math.min(75, contrastBase + jitter * 0.9)),
-          edgeSharpness: Math.max(18, Math.min(95, sharpnessBase + jitter * 1.3)),
-          centerToEdgeRatio: fovRatio,
-          redChannelDominance: redDom,
-          artifactScore: 84 + (i % 9),
-        },
-        lesionSignalStrength: Math.max(0.05, Math.min(0.98, rawSignal * signalAttenuation)),
+      const jitter = ((i * 37) % 13) - 6;
+      out.push({
+        width: 768,
+        height: 768,
+        meanBrightness: Math.max(15, Math.min(235, brightnessBase + jitter * 1.5)),
+        contrastStdDev: Math.max(10, Math.min(75, contrastBase + jitter * 1.1)),
+        edgeSharpness: Math.max(12, Math.min(96, sharpnessBase + jitter * 1.4)),
+        centerToEdgeRatio: fovBase,
+        redChannelDominance: redDom,
+        blueChannelDominance: Math.max(0.08, (1 - redDom) * 0.32),
+        artifactScore: 84 + (i % 9),
       });
     }
+    return out;
   };
 
-  // Group 1: Balanced Benchmark Illumination (N=24)
-  pushGroup(
-    'g-balanced',
-    'Balanced Fundus Illumination Cohort',
-    'Synthetic Calibration Batch A (Demo)',
-    24,
-    0.5,
-    108,
-    46,
-    82,
-    1.45,
-    0.48,
-    1.0
-  );
-
-  // Group 2: Low-Illumination / Darker Choroidal Fundus Contrast (N=20)
-  pushGroup(
-    'g-dark-contrast',
-    'Low-Illumination / Darker Fundus Pigmentation Tier',
-    'Synthetic Calibration Batch B (Demo)',
-    20,
-    0.5,
-    58,
-    31,
-    71,
-    1.28,
-    0.44,
-    0.84
-  );
-
-  // Group 3: Peripheral / Off-Axis Field Illumination (N=18)
-  pushGroup(
-    'g-off-axis',
-    'Off-Axis / Peripheral Illumination Subgroup',
-    'Synthetic Calibration Batch C (Demo)',
-    18,
-    0.5,
-    118,
-    36,
-    66,
-    1.12,
-    0.42,
-    0.88
-  );
-
-  // Group 4: Borderline Sharpness / Mild Motion Blur (N=16)
-  pushGroup(
-    'g-blur',
-    'Mild Motion Blur / Lower Sharpness Subgroup',
-    'Synthetic Calibration Batch D (Demo)',
-    16,
-    0.5,
-    102,
-    29,
-    44,
-    1.32,
-    0.45,
-    0.78
-  );
-
-  // Group 5: Small Rare Edge-Case Subgroup (N=6 < 15 -> triggers insufficient sample size warning)
-  pushGroup(
-    'g-small',
-    'Rare Artifact / High-Myopia Edge Subgroup',
-    'Synthetic Edge-Case Mini-Batch (Demo)',
-    6,
-    0.5,
-    92,
-    34,
-    62,
-    1.25,
-    0.43,
-    0.85
-  );
-
-  return samples;
-}
-
-function runEvaluationSuite(
-  thresholdCutoff: number,
-  sessionRecords: LocalScreeningRecord[]
-): FairEyeEvaluationReport {
-  const suite = buildSyntheticBenchmarkSuite();
-  const grouped = new Map<string, SyntheticEvalSample[]>();
-  for (const s of suite) {
-    const arr = grouped.get(s.groupId) ?? [];
-    arr.push(s);
-    grouped.set(s.groupId, arr);
-  }
-
-  const results: FairEyeGroupResult[] = [];
-  let totalCorrect = 0;
-  let totalTP = 0;
-  let totalFP = 0;
-  let totalTN = 0;
-  let totalFN = 0;
-  let totalN = 0;
-
-  for (const [groupId, items] of grouped.entries()) {
-    let tp = 0;
-    let fp = 0;
-    let tn = 0;
-    let fn = 0;
-
-    for (const sample of items) {
-      const quality = evaluateClientQualityGate(sample.stats, 'image/png');
-      // Prototype scoring rule combining actual lesion signal + contrast/quality attenuation
-      const qualityPenalty = quality.suitable ? 0 : 0.08;
-      const score = sample.lesionSignalStrength + (sample.stats.contrastStdDev > 44 ? 0.06 : 0) - qualityPenalty;
-      const predictedReferable = score >= thresholdCutoff;
-
-      if (sample.groundTruthReferable && predictedReferable) tp += 1;
-      else if (!sample.groundTruthReferable && predictedReferable) fp += 1;
-      else if (!sample.groundTruthReferable && !predictedReferable) tn += 1;
-      else fn += 1;
-    }
-
-    const n = items.length;
-    const sufficient = n >= 15;
-    const acc = sufficient ? Math.round(((tp + tn) / n) * 100) : null;
-    const sens = sufficient && tp + fn > 0 ? Math.round((tp / (tp + fn)) * 100) : null;
-    const spec = sufficient && tn + fp > 0 ? Math.round((tn / (tn + fp)) * 100) : null;
-    const err = acc !== null ? 100 - acc : null;
-
-    if (sufficient) {
-      totalCorrect += tp + tn;
-      totalTP += tp;
-      totalFP += fp;
-      totalTN += tn;
-      totalFN += fn;
-      totalN += n;
-    }
-
-    results.push({
-      groupId,
-      groupName: items[0].groupName,
-      datasetSource: items[0].datasetSource,
-      sampleCount: n,
-      sufficientSampleSize: sufficient,
-      accuracy: acc,
-      sensitivity: sens,
-      specificity: spec,
-      errorRate: err,
-      falsePositives: fp,
-      falseNegatives: fn,
-      truePositives: tp,
-      trueNegatives: tn,
-      limitationNote: !sufficient
-        ? 'Insufficient sample size for reliable comparison.'
-        : fn > fp
-          ? 'Higher false-negative rate under lower illumination/sharpness — further validation required.'
-          : fp > fn
-            ? 'Elevated false-positive rate due to background contrast variations.'
-            : 'Balanced error profile on synthetic calibration batch.',
-    });
-  }
-
-  // Also summarize local saved browser records as an observational cohort (unlabeled clinical truth unless flagged)
-  if (sessionRecords.length > 0) {
-    const n = sessionRecords.length;
-    results.push({
-      groupId: 'g-session-local',
-      groupName: 'Current Browser Session Queue (Observational)',
-      datasetSource: 'Local Saved Records (Unvalidated)',
-      sampleCount: n,
-      sufficientSampleSize: n >= 15,
-      accuracy: null,
-      sensitivity: null,
-      specificity: null,
-      errorRate: null,
-      falsePositives: 0,
-      falseNegatives: 0,
-      truePositives: 0,
-      trueNegatives: 0,
-      limitationNote:
-        n < 15
-          ? 'Insufficient sample size for reliable comparison.'
-          : 'No clinical ground-truth biopsy/grading label stored locally.',
-    });
-  }
-
-  const poweredSens = results
-    .filter((r) => r.sufficientSampleSize && r.sensitivity !== null)
-    .map((r) => r.sensitivity as number);
-  const maxSensitivityGap =
-    poweredSens.length >= 2 ? Math.max(...poweredSens) - Math.min(...poweredSens) : 0;
-  const performanceGapDetected = maxSensitivityGap >= 10;
-
-  return {
-    evaluatedAt: new Date().toISOString(),
-    totalSamples: totalN,
-    overallAccuracy: totalN > 0 ? Math.round((totalCorrect / totalN) * 100) : 0,
-    overallSensitivity:
-      totalTP + totalFN > 0 ? Math.round((totalTP / (totalTP + totalFN)) * 100) : 0,
-    overallSpecificity:
-      totalTN + totalFP > 0 ? Math.round((totalTN / (totalTN + totalFP)) * 100) : 0,
-    performanceGapDetected,
-    maxSensitivityGap,
-    groups: results,
-    summaryNotice: performanceGapDetected
-      ? 'Performance difference detected — further validation required.'
-      : 'Powered synthetic subgroups within 10% sensitivity spread — independent clinical validation still required.',
-  };
+  return [
+    {
+      cohortId: 'stress-balanced',
+      cohortName: 'Balanced Illumination Simulation (N=24)',
+      description: 'Well-lit, centered fundus pixel parameters',
+      samples: mkStats(24, 108, 46, 82, 1.45, 0.48),
+    },
+    {
+      cohortId: 'stress-low-light',
+      cohortName: 'Low-Illumination / Dark Fundus Simulation (N=20)',
+      description: 'Low mean brightness & reduced contrast stress',
+      samples: mkStats(20, 44, 24, 68, 1.25, 0.44),
+    },
+    {
+      cohortId: 'stress-blur',
+      cohortName: 'Motion Blur / Low Sharpness Simulation (N=16)',
+      description: 'Borderline Laplacian edge sharpness stress',
+      samples: mkStats(16, 102, 29, 36, 1.32, 0.45),
+    },
+    {
+      cohortId: 'stress-glare',
+      cohortName: 'Overexposed / Off-Axis Stress (N=18)',
+      description: 'High brightness / peripheral framing stress',
+      samples: mkStats(18, 196, 32, 60, 1.05, 0.41),
+    },
+  ];
 }
 
 export const FairEyePage: React.FC<FairEyePageProps> = ({ records }) => {
-  const [thresholdCutoff, setThresholdCutoff] = useState<number>(0.48);
+  const [minSharpnessCutoff, setMinSharpnessCutoff] = useState<number>(32);
   const [evalNonce, setEvalNonce] = useState<number>(0);
 
-  const report = useMemo(() => {
+  const stressResults = useMemo(() => {
     void evalNonce;
-    return runEvaluationSuite(thresholdCutoff, records);
-  }, [thresholdCutoff, records, evalNonce]);
+    const cohorts = buildQualityStressCohorts();
+    return cohorts.map((c) => {
+      let passed = 0;
+      let blocked = 0;
+      let avgBrightness = 0;
+      let avgSharpness = 0;
 
-  const chartData = useMemo(
-    () =>
-      report.groups
-        .filter((g) => g.sufficientSampleSize && g.accuracy !== null)
-        .map((g) => ({
-          name: g.groupName.replace(' Subgroup', '').replace(' Cohort', '').replace(' Tier', ''),
-          Accuracy: g.accuracy,
-          Sensitivity: g.sensitivity,
-          Specificity: g.specificity,
-        })),
-    [report]
-  );
+      for (const s of c.samples) {
+        const q = evaluateClientQualityGate(s, 'image/png');
+        const passesSharp = s.edgeSharpness >= minSharpnessCutoff;
+        if (q.suitable && passesSharp) passed += 1;
+        else blocked += 1;
+        avgBrightness += s.meanBrightness;
+        avgSharpness += s.edgeSharpness;
+      }
+
+      const n = c.samples.length;
+      const passRate = Math.round((passed / n) * 100);
+      return {
+        cohortId: c.cohortId,
+        cohortName: c.cohortName,
+        shortName: c.cohortName.split(' Simulation')[0],
+        description: c.description,
+        sampleCount: n,
+        passRate,
+        blockRate: 100 - passRate,
+        passed,
+        blocked,
+        meanSharpness: Math.round(avgSharpness / n),
+        meanBrightness: Math.round(avgBrightness / n),
+      };
+    });
+  }, [minSharpnessCutoff, evalNonce]);
+
+  const unavailableClinicalMetrics = [
+    { metric: 'Accuracy', status: 'Not Available', note: 'Requires labeled multi-center clinical dataset' },
+    { metric: 'Precision', status: 'Not Available', note: 'No clinical validation set connected' },
+    { metric: 'Recall / Sensitivity', status: 'Not Available', note: 'Requires ground-truth DR grading cohort' },
+    { metric: 'Specificity', status: 'Not Available', note: 'Requires clinical ground-truth comparison' },
+    { metric: 'F1-Score', status: 'Not Available', note: 'No evaluated validation cohort' },
+    { metric: 'ROC-AUC', status: 'Not Available', note: 'Requires continuous logits over validated dataset' },
+    { metric: 'Confusion Matrix', status: 'Not Available', note: 'Cannot compute without clinical ground truth' },
+  ];
 
   return (
     <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
@@ -311,29 +141,29 @@ export const FairEyePage: React.FC<FairEyePageProps> = ({ records }) => {
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-6 border-b border-slate-200 dark:border-slate-800">
         <div>
           <p className="text-xs font-mono text-violet-700 dark:text-violet-400">
-            IRIDEON Fair-Eye · Model Limitation & Subgroup Disparity Audit
+            IRIDEON Fair-Eye · Validation Transparency &amp; Quality-Gate Stress Audit
           </p>
           <h1 className="font-display text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white mt-1">
-            Fair-Eye Evaluation & Bias Discovery
+            Model Performance &amp; Validation Audit
           </h1>
           <p className="text-sm text-slate-600 dark:text-slate-300 mt-1 max-w-2xl">
-            Audits prototype screening performance across illumination, sharpness, off-axis geometry, and low-sample cohorts to uncover potential disparities and validation gaps rather than assuming universal fairness.
+            Truthfully documents clinical evaluation availability alongside non-clinical stress testing of IRIDEON&apos;s technical image-quality gate across illumination and blur scenarios.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0D1322] px-3 py-1.5 text-xs">
             <label htmlFor="fair-thresh" className="font-mono text-slate-600 dark:text-slate-300">
-              Decision Cutoff: {thresholdCutoff.toFixed(2)}
+              Min Sharpness Gate: {minSharpnessCutoff}
             </label>
             <input
               id="fair-thresh"
               type="range"
-              min={0.35}
-              max={0.65}
-              step={0.02}
-              value={thresholdCutoff}
-              onChange={(e) => setThresholdCutoff(Number(e.target.value))}
+              min={20}
+              max={65}
+              step={3}
+              value={minSharpnessCutoff}
+              onChange={(e) => setMinSharpnessCutoff(Number(e.target.value))}
               className="w-24 accent-cyan-600"
             />
           </div>
@@ -344,89 +174,79 @@ export const FairEyePage: React.FC<FairEyePageProps> = ({ records }) => {
             className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-700 hover:bg-cyan-800 dark:bg-cyan-600 dark:hover:bg-cyan-500 text-white text-xs sm:text-sm font-semibold transition-colors"
           >
             <Play className="w-3.5 h-3.5" />
-            <span>Re-Run Subgroup Audit</span>
+            <span>Re-Run Quality Stress Audit</span>
           </button>
         </div>
       </div>
 
-      {/* Explicit Ethical / Non-Clinical Notice */}
-      <div className="rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/80 dark:bg-amber-950/30 p-3.5 flex items-start gap-2.5 text-xs text-amber-900 dark:text-amber-200">
-        <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5 text-amber-700 dark:text-amber-400" />
-        <span>
-          <strong>Synthetic Calibration Audit Only — Not Clinical Validation:</strong> Metrics below are computed live in-browser across synthetic pixel test cohorts ({report.totalSamples} powered test samples) to expose sensitivity/specificity trade-offs and domain-shift failure modes. IRIDEON never claims to be unbiased or clinically certified.
-        </span>
-      </div>
-
-      {/* Mandatory Gap Alert */}
-      {report.performanceGapDetected && (
-        <div
-          role="alert"
-          className="rounded-xl border border-red-300 dark:border-red-900 bg-red-50 dark:bg-red-950/35 p-4 flex items-start gap-3 text-sm text-red-950 dark:text-red-100"
-        >
-          <AlertTriangle className="w-5 h-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
-          <div className="space-y-0.5">
-            <p className="font-display font-bold">
-              Performance difference detected — further validation required.
-            </p>
-            <p className="text-xs">
-              Maximum sensitivity disparity across sufficiently powered cohorts is{' '}
-              <span className="font-mono font-bold">{report.maxSensitivityGap}%</span>. Lower illumination and mild motion blur increase false-negative risk.
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Top Overall Powered Metrics */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-4">
-          <p className="text-xs font-mono text-slate-500 dark:text-slate-400">Powered Test Samples</p>
-          <p className="font-mono text-2xl font-bold tabular-nums text-slate-900 dark:text-white mt-1">
-            {report.totalSamples}
+      {/* Mandatory Truthful Notice */}
+      <div
+        role="status"
+        className="rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/35 p-5 flex items-start gap-3 text-sm text-amber-950 dark:text-amber-100"
+      >
+        <ShieldAlert className="w-5 h-5 text-amber-700 dark:text-amber-400 shrink-0 mt-0.5" />
+        <div className="space-y-1">
+          <p className="font-display font-bold">
+            Model performance metrics are not currently available in this prototype.
           </p>
-        </div>
-        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-4">
-          <p className="text-xs font-mono text-slate-500 dark:text-slate-400">Aggregate Accuracy (Demo)</p>
-          <p className="font-mono text-2xl font-bold tabular-nums text-cyan-700 dark:text-cyan-400 mt-1">
-            {report.overallAccuracy}%
-          </p>
-        </div>
-        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-4">
-          <p className="text-xs font-mono text-slate-500 dark:text-slate-400">Aggregate Sensitivity (Demo)</p>
-          <p className="font-mono text-2xl font-bold tabular-nums text-violet-700 dark:text-violet-400 mt-1">
-            {report.overallSensitivity}%
-          </p>
-        </div>
-        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-4">
-          <p className="text-xs font-mono text-slate-500 dark:text-slate-400">Max Sensitivity Gap</p>
-          <p
-            className={`font-mono text-2xl font-bold tabular-nums mt-1 ${
-              report.performanceGapDetected
-                ? 'text-red-700 dark:text-red-400'
-                : 'text-emerald-700 dark:text-emerald-400'
-            }`}
-          >
-            {report.maxSensitivityGap}%
+          <p className="text-xs leading-relaxed">
+            IRIDEON operates in Prototype / Educational Mode without pretrained clinical CNN weights or a linked ophthalmologist-graded validation dataset. Consequently, Accuracy, Precision, Recall, F1-Score, Sensitivity, Specificity, ROC-AUC, and Confusion Matrices are intentionally reported as unavailable rather than fabricated.
           </p>
         </div>
       </div>
 
-      {/* Grouped Performance Chart */}
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-5 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
+      {/* Clinical Performance Matrix (Truthfully Unavailable) */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
           <h2 className="font-display text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-            <Scale className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />
-            <span>Subgroup Performance Comparison (Synthetic Test Cohorts with N ≥ 15)</span>
+            <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+            <span>Clinical Validation Benchmark Status</span>
           </h2>
           <span className="text-xs font-mono text-slate-500 dark:text-slate-400">
-            Cutoff: {thresholdCutoff.toFixed(2)}
+            Session Stored Cases: {records.length} (Unlabeled clinical ground truth)
           </span>
         </div>
 
-        <div className="h-72 w-full">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 p-5">
+          {unavailableClinicalMetrics.map((m) => (
+            <div
+              key={m.metric}
+              className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#090E1A] p-4 space-y-1"
+            >
+              <p className="text-xs font-mono text-slate-500 dark:text-slate-400">{m.metric}</p>
+              <p className="font-display text-base font-bold text-slate-700 dark:text-slate-300">
+                {m.status}
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                {m.note}
+              </p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Non-Clinical Technical Quality-Gate Stress Simulator */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="font-display text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+              <Scale className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />
+              <span>Technical Quality-Gate Pass vs. Rejection Stress Test (Synthetic Pixel Profiles)</span>
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Simulates how the preprocessing gate responds to underexposure, blur, and off-axis lighting — NOT clinical diagnostic accuracy.
+            </p>
+          </div>
+          <span className="text-xs font-mono text-cyan-700 dark:text-cyan-400">
+            Sharpness Cutoff: {minSharpnessCutoff}
+          </span>
+        </div>
+
+        <div className="h-64 w-full">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData} margin={{ top: 10, right: 16, left: -10, bottom: 10 }}>
+            <BarChart data={stressResults} margin={{ top: 10, right: 16, left: -10, bottom: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.25} />
-              <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#94a3b8' }} />
+              <XAxis dataKey="shortName" tick={{ fontSize: 11, fill: '#94a3b8' }} />
               <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: '#94a3b8' }} unit="%" />
               <Tooltip
                 contentStyle={{
@@ -438,89 +258,52 @@ export const FairEyePage: React.FC<FairEyePageProps> = ({ records }) => {
                 }}
               />
               <Legend wrapperStyle={{ fontSize: '12px' }} />
-              <Bar dataKey="Accuracy" fill="#06b6d4" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="Sensitivity" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="Specificity" fill="#10b981" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="passRate" name="Quality Gate Pass %" fill="#06b6d4" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="blockRate" name="Quality Gate Rejected %" fill="#f59e0b" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
-      </div>
 
-      {/* Complete Metrics Table */}
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
-          <h2 className="font-display text-base font-semibold text-slate-900 dark:text-white">
-            Detailed Fair-Eye Evaluation Matrix
-          </h2>
-          <span className="text-xs font-mono text-slate-500 dark:text-slate-400">
-            Minimum sample threshold: N ≥ 15
-          </span>
-        </div>
-
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto border-t border-slate-200 dark:border-slate-800 pt-3">
           <table className="w-full text-left text-xs">
-            <thead className="bg-slate-50 dark:bg-[#090E1A] border-b border-slate-200 dark:border-slate-800 font-mono text-[11px] text-slate-600 dark:text-slate-400">
+            <thead className="font-mono text-[11px] text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800">
               <tr>
-                <th className="px-4 py-3">Group / Cohort</th>
-                <th className="px-3 py-3 text-right">Samples</th>
-                <th className="px-3 py-3 text-right">Accuracy</th>
-                <th className="px-3 py-3 text-right">Sensitivity</th>
-                <th className="px-3 py-3 text-right">Specificity</th>
-                <th className="px-3 py-3 text-right">Error Rate</th>
-                <th className="px-3 py-3 text-right">FP</th>
-                <th className="px-3 py-3 text-right">FN</th>
-                <th className="px-4 py-3">Limitation / Audit Note</th>
+                <th className="py-2 pr-4">Synthetic Stress Condition</th>
+                <th className="py-2 px-3 text-right">Samples</th>
+                <th className="py-2 px-3 text-right">Mean Sharpness</th>
+                <th className="py-2 px-3 text-right">Mean Brightness</th>
+                <th className="py-2 px-3 text-right">Gate Passed</th>
+                <th className="py-2 pl-3 text-right">Gate Rejected</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-              {report.groups.map((g) => (
-                <tr key={g.groupId} className="hover:bg-slate-50/80 dark:hover:bg-slate-900/40">
-                  <td className="px-4 py-3">
-                    <p className="font-semibold text-slate-900 dark:text-white">{g.groupName}</p>
-                    <p className="text-[11px] text-slate-500 dark:text-slate-400">{g.datasetSource}</p>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800/70">
+              {stressResults.map((r) => (
+                <tr key={r.cohortId}>
+                  <td className="py-2.5 pr-4">
+                    <p className="font-semibold text-slate-900 dark:text-white">{r.cohortName}</p>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">{r.description}</p>
                   </td>
-                  <td className="px-3 py-3 text-right font-mono tabular-nums font-semibold">
-                    {g.sampleCount}
+                  <td className="py-2.5 px-3 text-right font-mono tabular-nums">{r.sampleCount}</td>
+                  <td className="py-2.5 px-3 text-right font-mono tabular-nums">{r.meanSharpness}%</td>
+                  <td className="py-2.5 px-3 text-right font-mono tabular-nums">{r.meanBrightness}</td>
+                  <td className="py-2.5 px-3 text-right font-mono tabular-nums text-emerald-700 dark:text-emerald-400">
+                    {r.passed} ({r.passRate}%)
                   </td>
-                  <td className="px-3 py-3 text-right font-mono tabular-nums">
-                    {g.accuracy !== null ? `${g.accuracy}%` : '—'}
-                  </td>
-                  <td
-                    className={`px-3 py-3 text-right font-mono tabular-nums font-semibold ${
-                      g.sensitivity !== null && g.sensitivity < 75
-                        ? 'text-red-700 dark:text-red-400'
-                        : 'text-slate-900 dark:text-white'
-                    }`}
-                  >
-                    {g.sensitivity !== null ? `${g.sensitivity}%` : '—'}
-                  </td>
-                  <td className="px-3 py-3 text-right font-mono tabular-nums">
-                    {g.specificity !== null ? `${g.specificity}%` : '—'}
-                  </td>
-                  <td className="px-3 py-3 text-right font-mono tabular-nums">
-                    {g.errorRate !== null ? `${g.errorRate}%` : '—'}
-                  </td>
-                  <td className="px-3 py-3 text-right font-mono tabular-nums text-amber-700 dark:text-amber-400">
-                    {g.sufficientSampleSize && g.accuracy !== null ? g.falsePositives : '—'}
-                  </td>
-                  <td className="px-3 py-3 text-right font-mono tabular-nums text-red-700 dark:text-red-400">
-                    {g.sufficientSampleSize && g.accuracy !== null ? g.falseNegatives : '—'}
-                  </td>
-                  <td className="px-4 py-3 max-w-xs">
-                    {!g.sufficientSampleSize ? (
-                      <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400 font-medium">
-                        <Info className="w-3.5 h-3.5 shrink-0" />
-                        <span>Insufficient sample size for reliable comparison.</span>
-                      </span>
-                    ) : (
-                      <span className="text-slate-600 dark:text-slate-300">{g.limitationNote}</span>
-                    )}
+                  <td className="py-2.5 pl-3 text-right font-mono tabular-nums text-amber-700 dark:text-amber-400">
+                    {r.blocked} ({r.blockRate}%)
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+
+        <p className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+          <Info className="w-3.5 h-3.5 shrink-0" />
+          <span>
+            Connect an externally validated clinical ML endpoint via ML_BACKEND_URL to inspect real cohort calibration metrics.
+          </span>
+        </p>
       </div>
     </div>
   );

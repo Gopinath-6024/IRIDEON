@@ -1,18 +1,22 @@
 import React, { useState } from 'react';
 import { Printer, Download, ShieldAlert, CheckCircle2 } from 'lucide-react';
-import type { AppPage, RetinaAnalysisResult } from '../types/retina';
+import { resolveDecisionSupport } from './WhyResultAndDecisionCards';
+import type { AppPage, DoctorReviewData, RetinaAnalysisResult } from '../types/retina';
 
 interface CaseReportPageProps {
   analysis: RetinaAnalysisResult | null;
   imageUrl: string | null;
+  doctorReview?: DoctorReviewData | null;
   onNavigate: (page: AppPage) => void;
 }
 
 export const CaseReportPage: React.FC<CaseReportPageProps> = ({
   analysis,
   imageUrl,
+  doctorReview,
   onNavigate,
 }) => {
+  const [patientCaseId, setPatientCaseId] = useState('');
   const [researcherNotes, setResearcherNotes] = useState('');
   const [exportStatus, setExportStatus] = useState<string | null>(null);
 
@@ -36,6 +40,9 @@ export const CaseReportPage: React.FC<CaseReportPageProps> = ({
     );
   }
 
+  const decisionSupport = resolveDecisionSupport(analysis);
+  const resolvedCaseTag = patientCaseId.trim() || analysis.caseId;
+
   const handlePrintPdf = () => {
     window.print();
     setExportStatus('Print / Save as PDF dialog opened.');
@@ -46,7 +53,22 @@ export const CaseReportPage: React.FC<CaseReportPageProps> = ({
       const res = await fetch('/api/report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ analysis, researcherNotes }),
+        body: JSON.stringify({
+          analysis: {
+            ...analysis,
+            decisionSupport,
+          },
+          patientCaseId: resolvedCaseTag,
+          researcherNotes,
+          clinicianReview: doctorReview
+            ? {
+                decision: doctorReview.clinicianDecision ?? null,
+                reviewStatus: doctorReview.reviewStatus,
+                notes: doctorReview.reviewNotes,
+                reviewedAt: doctorReview.reviewedAt,
+              }
+            : null,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Report generation failed');
@@ -106,22 +128,41 @@ export const CaseReportPage: React.FC<CaseReportPageProps> = ({
         </div>
       )}
 
-      {/* Optional Research Notes Input (no PII) */}
-      <div className="no-print rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-4 space-y-2">
-        <label
-          htmlFor="researcher-notes"
-          className="block text-xs font-semibold text-slate-700 dark:text-slate-300"
-        >
-          Optional Educational / Research Notes (Do NOT enter patient names, DOB, or identifiers)
-        </label>
-        <textarea
-          id="researcher-notes"
-          rows={2}
-          value={researcherNotes}
-          onChange={(e) => setResearcherNotes(e.target.value)}
-          placeholder="Add observations on heatmap alignment, quality metrics, or teaching points..."
-          className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#090E1A] px-3 py-2 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
-        />
+      {/* Optional Case ID & Research Notes Input (no PII) */}
+      <div className="no-print rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-4 space-y-3">
+        <div>
+          <label
+            htmlFor="patient-case-id"
+            className="block text-xs font-semibold text-slate-700 dark:text-slate-300"
+          >
+            Optional Patient / Case ID Tag (Anonymous code only — Do NOT enter names or PII)
+          </label>
+          <input
+            id="patient-case-id"
+            type="text"
+            value={patientCaseId}
+            onChange={(e) => setPatientCaseId(e.target.value.slice(0, 48))}
+            placeholder={`Default: ${analysis.caseId}`}
+            className="mt-1.5 w-full sm:w-80 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#090E1A] px-3 py-2 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+          />
+        </div>
+
+        <div>
+          <label
+            htmlFor="researcher-notes"
+            className="block text-xs font-semibold text-slate-700 dark:text-slate-300"
+          >
+            Optional Educational / Research Notes (Do NOT enter patient names, DOB, or identifiers)
+          </label>
+          <textarea
+            id="researcher-notes"
+            rows={2}
+            value={researcherNotes}
+            onChange={(e) => setResearcherNotes(e.target.value)}
+            placeholder="Add observations on heatmap alignment, quality metrics, or teaching points..."
+            className="mt-1.5 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#090E1A] px-3 py-2 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+          />
+        </div>
       </div>
 
       {/* PDF-Style Document Sheet */}
@@ -133,7 +174,7 @@ export const CaseReportPage: React.FC<CaseReportPageProps> = ({
               IRIDEON · EXPLAINABLE RETINAL AI RESEARCH REPORT
             </p>
             <h2 className="font-display text-2xl font-bold text-slate-900 dark:text-white mt-1">
-              Case {analysis.caseId}
+              Case {resolvedCaseTag}
             </h2>
             <p className="text-xs font-mono text-slate-500 dark:text-slate-400 mt-1">
               Analysis Date: {new Date(analysis.analyzedAt).toLocaleString()}
@@ -158,23 +199,65 @@ export const CaseReportPage: React.FC<CaseReportPageProps> = ({
           </div>
         </div>
 
-        {/* Core Output Grid + Thumbnail */}
+        {/* Core Output Grid + Dual Visual Preview (Original + Model Attention) */}
         <div className="grid grid-cols-1 sm:grid-cols-12 gap-6 items-center">
           {imageUrl && (
-            <div className="sm:col-span-4">
-              <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-black aspect-square overflow-hidden">
-                <img
-                  src={imageUrl}
-                  alt="Case fundus reference thumbnail"
-                  referrerPolicy="no-referrer"
-                  className="w-full h-full object-contain"
-                />
+            <div className="sm:col-span-5 grid grid-cols-2 gap-2.5">
+              <div className="space-y-1">
+                <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-black aspect-square overflow-hidden">
+                  <img
+                    src={imageUrl}
+                    alt="Original retinal fundus preview"
+                    referrerPolicy="no-referrer"
+                    className="w-full h-full object-contain"
+                  />
+                </div>
+                <p className="text-[10px] font-mono text-center text-slate-500 dark:text-slate-400">
+                  Original Input
+                </p>
+              </div>
+              <div className="space-y-1">
+                <div className="relative rounded-lg border border-slate-200 dark:border-slate-700 bg-black aspect-square overflow-hidden">
+                  <img
+                    src={imageUrl}
+                    alt="Model attention preview"
+                    referrerPolicy="no-referrer"
+                    className="w-full h-full object-contain"
+                  />
+                  <svg viewBox="0 0 100 100" className="absolute inset-0 w-full h-full pointer-events-none">
+                    <defs>
+                      {analysis.heatmapData.regions.map((reg, idx) => (
+                        <radialGradient key={`rpt-g-${idx}`} id={`rpt-grad-${idx}`} cx="50%" cy="50%" r="50%">
+                          <stop
+                            offset="0%"
+                            stopColor={reg.intensity > 0.72 ? '#ef4444' : '#f59e0b'}
+                            stopOpacity={Math.min(0.85, reg.intensity)}
+                          />
+                          <stop offset="60%" stopColor="#06b6d4" stopOpacity={reg.intensity * 0.4} />
+                          <stop offset="100%" stopColor="#06b6d4" stopOpacity="0" />
+                        </radialGradient>
+                      ))}
+                    </defs>
+                    {analysis.heatmapData.regions.map((reg, idx) => (
+                      <circle
+                        key={`rpt-c-${idx}`}
+                        cx={reg.x}
+                        cy={reg.y}
+                        r={reg.radius}
+                        fill={`url(#rpt-grad-${idx})`}
+                      />
+                    ))}
+                  </svg>
+                </div>
+                <p className="text-[10px] font-mono text-center text-cyan-700 dark:text-cyan-400">
+                  Model Attention
+                </p>
               </div>
             </div>
           )}
 
-          <div className={imageUrl ? 'sm:col-span-8' : 'sm:col-span-12'}>
-            <div className="grid grid-cols-2 gap-4">
+          <div className={imageUrl ? 'sm:col-span-7' : 'sm:col-span-12'}>
+            <div className="grid grid-cols-2 gap-3.5">
               <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3.5">
                 <p className="text-xs text-slate-500 dark:text-slate-400">AI Prediction</p>
                 <p className="font-display text-lg font-bold text-slate-900 dark:text-white mt-0.5">
@@ -188,20 +271,55 @@ export const CaseReportPage: React.FC<CaseReportPageProps> = ({
                 </p>
               </div>
               <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3.5">
-                <p className="text-xs text-slate-500 dark:text-slate-400">Confidence</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Model confidence estimate
+                </p>
                 <p className="font-mono text-lg font-bold tabular-nums text-cyan-700 dark:text-cyan-400 mt-0.5">
-                  {analysis.confidence}%
+                  {analysis.confidence}%{' '}
+                  <span className="text-[10px] font-normal text-slate-500 dark:text-slate-400">
+                    (uncalibrated)
+                  </span>
                 </p>
               </div>
               <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3.5">
-                <p className="text-xs text-slate-500 dark:text-slate-400">Uncertainty & Quality</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Technical Image Quality
+                </p>
                 <p className="font-mono text-sm font-bold text-amber-700 dark:text-amber-400 mt-1">
-                  {analysis.uncertainty} · {analysis.imageQuality.overall}
+                  {analysis.imageQuality.qualityBadgeText ?? analysis.imageQuality.overall} · {analysis.uncertainty}
                 </p>
               </div>
             </div>
           </div>
         </div>
+
+        {/* Decision Support & Clinician Review Summary */}
+        <section className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-4 space-y-1.5">
+            <p className="text-xs font-mono text-violet-700 dark:text-violet-400">
+              Screening Decision Support ({decisionSupport.riskLevel})
+            </p>
+            <p className="text-xs sm:text-sm font-semibold text-slate-900 dark:text-white">
+              {decisionSupport.interpretation}
+            </p>
+            <p className="text-xs text-slate-600 dark:text-slate-400">
+              Suggested Next Step: {decisionSupport.suggestedAction}
+            </p>
+          </div>
+          <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-4 space-y-1.5">
+            <p className="text-xs font-mono text-cyan-700 dark:text-cyan-400">
+              Clinician Review Status (Human-in-the-Loop)
+            </p>
+            <p className="text-xs sm:text-sm font-semibold text-slate-900 dark:text-white">
+              {doctorReview?.clinicianDecision || doctorReview?.reviewStatus || 'Pending Specialist Review'}
+            </p>
+            <p className="text-xs text-slate-600 dark:text-slate-400">
+              {doctorReview?.reviewNotes
+                ? `Notes: ${doctorReview.reviewNotes}`
+                : 'No specialist review notes recorded in this session yet.'}
+            </p>
+          </div>
+        </section>
 
         {/* Systemic Estimates & Symptoms Summary */}
         <section className="grid grid-cols-1 sm:grid-cols-2 gap-4">

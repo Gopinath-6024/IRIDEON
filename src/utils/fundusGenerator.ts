@@ -406,6 +406,8 @@ export async function computeClientPixelStats(dataUrl: string): Promise<ClientPi
 
       const totalRgb = sumRed + sumGreen + sumBlue;
       const redChannelDominance = totalRgb > 0 ? sumRed / totalRgb : 0.33;
+      const greenChannelDominance = totalRgb > 0 ? sumGreen / totalRgb : 0.33;
+      const blueChannelDominance = totalRgb > 0 ? sumBlue / totalRgb : 0.33;
       const glareRatio = saturatedPixels / n;
       const artifactScore = Math.max(20, Math.min(98, Math.round(95 - glareRatio * 350)));
 
@@ -417,6 +419,8 @@ export async function computeClientPixelStats(dataUrl: string): Promise<ClientPi
         edgeSharpness,
         centerToEdgeRatio,
         redChannelDominance,
+        greenChannelDominance,
+        blueChannelDominance,
         artifactScore,
       });
     };

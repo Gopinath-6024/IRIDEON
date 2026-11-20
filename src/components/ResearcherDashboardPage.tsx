@@ -7,10 +7,13 @@ import {
   FileText,
   ArrowRight,
   Layers,
+  Trash2,
+  ArrowLeftRight,
 } from 'lucide-react';
 import type {
   AppPage,
   DemoCaseId,
+  LocalScreeningRecord,
   ResearcherSession,
   RetinaAnalysisResult,
 } from '../types/retina';
@@ -24,8 +27,10 @@ interface ResearcherDashboardPageProps {
   session: ResearcherSession | null;
   onOpenAuth: () => void;
   sessionHistory: SessionCaseEntry[];
+  localRecords?: LocalScreeningRecord[];
   activeCaseId: string | null;
   onSelectHistoryCase: (entry: SessionCaseEntry) => void;
+  onDeleteHistoryCase?: (caseId: string) => void;
   onRunDemo: (demoId: DemoCaseId) => void;
   onNavigate: (page: AppPage) => void;
 }
@@ -34,8 +39,10 @@ export const ResearcherDashboardPage: React.FC<ResearcherDashboardPageProps> = (
   session,
   onOpenAuth,
   sessionHistory,
+  localRecords = [],
   activeCaseId,
   onSelectHistoryCase,
+  onDeleteHistoryCase,
   onRunDemo,
   onNavigate,
 }) => {
@@ -46,6 +53,10 @@ export const ResearcherDashboardPage: React.FC<ResearcherDashboardPageProps> = (
             sessionHistory.length
         )
       : null;
+
+  const reviewedCount = localRecords.filter(
+    (r) => r.doctorReview.clinicianDecision || r.doctorReview.reviewStatus !== 'Pending Review'
+  ).length;
 
   return (
     <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
@@ -113,7 +124,7 @@ export const ResearcherDashboardPage: React.FC<ResearcherDashboardPageProps> = (
                 Guest Educational Session
               </p>
               <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
-                Sign in with an ephemeral researcher profile to tag session exports and review lab role metadata. No clinical data is persisted.
+                Sign in with an ephemeral researcher profile to tag session exports and review lab role metadata. No clinical data is persisted remotely.
               </p>
             </div>
             <button
@@ -127,8 +138,8 @@ export const ResearcherDashboardPage: React.FC<ResearcherDashboardPageProps> = (
         )}
       </div>
 
-      {/* Session KPI Strip (strictly derived from real current-session runs) */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      {/* Session KPI Strip (strictly derived from real current-session runs & local records) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-5">
           <p className="text-xs font-mono text-slate-500 dark:text-slate-400">
             Session Analyses Run
@@ -137,19 +148,34 @@ export const ResearcherDashboardPage: React.FC<ResearcherDashboardPageProps> = (
             {sessionHistory.length}
           </p>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            Cleared automatically when browser session closes
+            Active cases held in browser session memory
           </p>
         </div>
 
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-5">
           <p className="text-xs font-mono text-slate-500 dark:text-slate-400">
-            Mean Session Confidence
+            Mean Confidence Estimate
           </p>
           <p className="font-mono text-3xl font-bold tabular-nums text-cyan-700 dark:text-cyan-400 mt-1.5">
             {avgConfidence !== null ? `${avgConfidence}%` : '—'}
           </p>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            Prototype output concentration (not diagnostic accuracy)
+            Uncalibrated prototype score (not diagnostic accuracy)
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-5">
+          <p className="text-xs font-mono text-slate-500 dark:text-slate-400">
+            Clinician Reviews Logged
+          </p>
+          <p className="font-mono text-3xl font-bold tabular-nums text-emerald-700 dark:text-emerald-400 mt-1.5">
+            {reviewedCount}
+            <span className="text-sm font-normal text-slate-500 dark:text-slate-400">
+              /{localRecords.length}
+            </span>
+          </p>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+            Human-in-the-loop sign-offs saved locally
           </p>
         </div>
 
@@ -161,7 +187,7 @@ export const ResearcherDashboardPage: React.FC<ResearcherDashboardPageProps> = (
             IRIDEON Prototype / Demonstration Model
           </p>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            Modular interface ready for external Python ML endpoint
+            Modular interface ready for external ML endpoint
           </p>
         </div>
       </div>
@@ -176,7 +202,7 @@ export const ResearcherDashboardPage: React.FC<ResearcherDashboardPageProps> = (
             </h2>
           </div>
           <span className="text-xs font-mono text-slate-500 dark:text-slate-400">
-            Ephemeral memory only
+            Inspect, compare, export, or remove session runs
           </span>
         </div>
 
@@ -243,9 +269,9 @@ export const ResearcherDashboardPage: React.FC<ResearcherDashboardPageProps> = (
                         {entry.analysis.uncertainty}
                       </td>
                       <td className="py-3 px-4 font-mono">
-                        {entry.analysis.imageQuality.overall}
+                        {entry.analysis.imageQuality.qualityBadgeText ?? entry.analysis.imageQuality.overall}
                       </td>
-                      <td className="py-3 px-4 text-right space-x-2 whitespace-nowrap">
+                      <td className="py-3 px-4 text-right space-x-3 whitespace-nowrap">
                         <button
                           type="button"
                           onClick={() => {
@@ -254,8 +280,19 @@ export const ResearcherDashboardPage: React.FC<ResearcherDashboardPageProps> = (
                           }}
                           className="inline-flex items-center gap-1 text-xs font-medium text-cyan-700 dark:text-cyan-400 hover:underline"
                         >
-                          <span>Inspect</span>
+                          <span>View</span>
                           <ArrowRight className="w-3 h-3" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onSelectHistoryCase(entry);
+                            onNavigate('comparison');
+                          }}
+                          className="inline-flex items-center gap-1 text-xs font-medium text-violet-700 dark:text-violet-400 hover:underline"
+                        >
+                          <ArrowLeftRight className="w-3 h-3" />
+                          <span>Compare</span>
                         </button>
                         <button
                           type="button"
@@ -268,6 +305,17 @@ export const ResearcherDashboardPage: React.FC<ResearcherDashboardPageProps> = (
                           <FileText className="w-3 h-3" />
                           <span>Report</span>
                         </button>
+                        {onDeleteHistoryCase && (
+                          <button
+                            type="button"
+                            onClick={() => onDeleteHistoryCase(entry.analysis.caseId)}
+                            aria-label={`Delete case ${entry.analysis.caseId}`}
+                            className="inline-flex items-center gap-1 text-xs font-medium text-rose-600 dark:text-rose-400 hover:underline"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>Delete</span>
+                          </button>
+                        )}
                       </td>
                     </tr>
                   );

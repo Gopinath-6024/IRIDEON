@@ -300,6 +300,78 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         </div>
       </section>
 
+      {/* Rapid Judge / Reviewer Scannable Strip: UPLOAD -> ANALYZE -> EXPLAIN -> REVIEW & WHAT MAKES IRIDEON DIFFERENT? */}
+      <section className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+          {/* 4-Step End-to-End Screening Workflow */}
+          <div className="lg:col-span-7 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-6 flex flex-col justify-between">
+            <div>
+              <p className="text-xs font-mono text-cyan-700 dark:text-cyan-400">
+                End-to-End Screening Pipeline
+              </p>
+              <h2 className="font-display text-xl sm:text-2xl font-bold text-slate-900 dark:text-white mt-1">
+                Upload → Analyze → Explain → Review
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-1.5">
+                Every retinal image passes through quality validation, prototype inference, spatial attention mapping, and human-in-the-loop verification.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5">
+              {[
+                { step: '01', title: 'Upload', desc: 'JPG/PNG fundus or demo case + 3-tier pixel quality gate' },
+                { step: '02', title: 'Analyze', desc: 'Prototype 5-class severity & uncalibrated confidence check' },
+                { step: '03', title: 'Explain', desc: '4-panel XAI grid, sobel vessel contrast & overlay slider' },
+                { step: '04', title: 'Review', desc: 'Agree / review / disagree sign-off & JSON/PDF report' },
+              ].map((item) => (
+                <div
+                  key={item.step}
+                  className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#090E1A] p-3.5"
+                >
+                  <p className="text-[11px] font-mono text-cyan-700 dark:text-cyan-400">
+                    {item.step} · {item.title.toUpperCase()}
+                  </p>
+                  <p className="font-display text-sm font-semibold text-slate-900 dark:text-white mt-1">
+                    {item.title}
+                  </p>
+                  <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-1 leading-relaxed">
+                    {item.desc}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Truthful 6-Point Checklist */}
+          <div className="lg:col-span-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-6">
+            <p className="text-xs font-mono text-violet-700 dark:text-violet-400">
+              Prototype Capabilities Summary
+            </p>
+            <h2 className="font-display text-xl font-bold text-slate-900 dark:text-white mt-1 mb-4">
+              What Makes IRIDEON Different?
+            </h2>
+            <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 gap-2.5 text-xs sm:text-sm text-slate-700 dark:text-slate-300">
+              {[
+                'Explainable prediction — structured “Why This Result?” reasoning breakdown',
+                'Image-quality validation — rejects blurry, dark, or non-retinal images',
+                'Confidence-aware results — explicit uncertainty alerts on low confidence',
+                'Visual model evidence — 4-panel grid & downloadable PNG heatmap overlay',
+                'Human-in-the-loop review — specialist agree / needs review / disagree workflow',
+                'Structured screening report — printable PDF & JSON export with disclaimer',
+              ].map((point) => (
+                <li key={point} className="flex items-start gap-2">
+                  <CheckCircle2
+                    className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5"
+                    aria-hidden="true"
+                  />
+                  <span>{point}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </section>
+
       {/* Four Core Feature Cards */}
       <section className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8">
         <div className="max-w-2xl mb-8">

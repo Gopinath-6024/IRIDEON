@@ -21,6 +21,7 @@ import {
   Stethoscope,
   Send,
   XCircle,
+  RotateCcw,
 } from 'lucide-react';
 import { ExplainabilityViewer, type FocusTarget, type ViewerTab } from './ExplainabilityViewer';
 import { AIReasoningLens } from './AIReasoningLens';
@@ -28,10 +29,18 @@ import { ConfidenceAndUncertainty } from './ConfidenceAndUncertainty';
 import { WhatIfExplorer } from './WhatIfExplorer';
 import { RetinaExplainChat } from './RetinaExplainChat';
 import { ClinicalIndicatorsPanel } from './ClinicalIndicatorsPanel';
+import {
+  FiveClassScaleStrip,
+  InlineClinicianReviewCard,
+  ScreeningDecisionSupportCard,
+  WhyThisResultCard,
+} from './WhyResultAndDecisionCards';
 import type {
   AppPage,
   ChatMessage,
+  ClinicianDecision,
   DemoCaseId,
+  DoctorReviewData,
   ExplainMode,
   ImageQualityMetrics,
   RetinaAnalysisResult,
@@ -43,6 +52,7 @@ interface AnalysisWorkspaceProps {
   imageUrl: string | null;
   preQuality: ImageQualityMetrics | null;
   isAnalyzing: boolean;
+  analysisStageLabel?: string | null;
   errorMsg: string | null;
   defaultExplainMode: ExplainMode;
   colormap: 'thermal' | 'clinical';
@@ -50,11 +60,15 @@ interface AnalysisWorkspaceProps {
   onAcknowledgeFeatures: () => void;
   onUploadFile: (file: File) => void;
   onRunAnalysis: () => void;
+  onCancelAnalysis?: () => void;
+  onResetWorkspace?: () => void;
   onSelectDemo: (demoId: DemoCaseId) => void;
   onTestUnsuitableImage: () => void;
   onNavigate: (page: AppPage) => void;
   onSendToDoctorReview: () => void;
   onCreateReferral: () => void;
+  activeDoctorReview?: DoctorReviewData | null;
+  onSaveClinicianDecision?: (decision: ClinicianDecision, notes: string) => void;
   isOffline: boolean;
   simulatedOffline: boolean;
   onToggleSimulatedOffline: () => void;
@@ -97,6 +111,7 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
   imageUrl,
   preQuality,
   isAnalyzing,
+  analysisStageLabel,
   errorMsg,
   defaultExplainMode,
   colormap,
@@ -104,11 +119,15 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
   onAcknowledgeFeatures,
   onUploadFile,
   onRunAnalysis,
+  onCancelAnalysis,
+  onResetWorkspace,
   onSelectDemo,
   onTestUnsuitableImage,
   onNavigate,
   onSendToDoctorReview,
   onCreateReferral,
+  activeDoctorReview,
+  onSaveClinicianDecision,
   isOffline,
   simulatedOffline,
   onToggleSimulatedOffline,
@@ -123,7 +142,7 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
-  const [viewerTab, setViewerTab] = useState<ViewerTab>('heatmap');
+  const [viewerTab, setViewerTab] = useState<ViewerTab>('grid');
   const [focusTarget, setFocusTarget] = useState<FocusTarget | null>(null);
   const [showFeaturesDrawer, setShowFeaturesDrawer] = useState(false);
 
@@ -245,6 +264,18 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
             <BookOpen className="w-3.5 h-3.5" aria-hidden="true" />
             <span>{showFeaturesDrawer ? 'Hide Features Overview' : 'Features Overview'}</span>
           </button>
+
+          {(imageUrl || analysis) && onResetWorkspace && (
+            <button
+              type="button"
+              disabled={isAnalyzing}
+              onClick={onResetWorkspace}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200 hover:border-amber-500 disabled:opacity-45 transition-colors whitespace-nowrap"
+            >
+              <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Reset</span>
+            </button>
+          )}
 
           {analysis && (
             <>
@@ -524,26 +555,37 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
             </div>
           </div>
 
-          {/* Pre-Analysis Smart Retinal Image Quality Gate */}
+          {/* Pre-Analysis Technical Retinal Image Quality Gate */}
           {activeQuality && (
             <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-5 space-y-4">
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex items-start justify-between gap-2">
                 <div>
                   <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 uppercase tracking-wide">
                     IMAGE QUALITY GATE
                   </p>
                   <h2
                     className={`font-display text-base font-bold mt-0.5 ${
-                      activeQuality.suitable
+                      activeQuality.qualityTier === 'Good' || (activeQuality.suitable && activeQuality.overall === 'Good')
                         ? 'text-emerald-700 dark:text-emerald-400'
-                        : 'text-red-700 dark:text-red-400'
+                        : activeQuality.suitable
+                          ? 'text-amber-700 dark:text-amber-400'
+                          : 'text-red-700 dark:text-red-400'
                     }`}
                   >
-                    {activeQuality.suitable ? '✓ Suitable for screening' : '✕ Unsuitable'}
+                    {activeQuality.qualityBadgeText ??
+                      (activeQuality.suitable
+                        ? activeQuality.overall === 'Good'
+                          ? '✓ Good'
+                          : '⚠ Needs better image'
+                        : '✕ Invalid image')}
                   </h2>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                    {activeQuality.assessmentLabel ||
+                      'Technical image-quality assessment (pixel heuristics — not a validated clinical quality model)'}
+                  </p>
                 </div>
                 <span
-                  className={`font-mono text-xs font-semibold ${
+                  className={`font-mono text-xs font-semibold shrink-0 ${
                     activeQuality.overall === 'Good'
                       ? 'text-emerald-700 dark:text-emerald-400'
                       : activeQuality.overall === 'Acceptable'
@@ -551,13 +593,23 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
                         : 'text-red-700 dark:text-red-400'
                   }`}
                 >
-                  Overall: {activeQuality.overall}
+                  {activeQuality.suitable ? activeQuality.suitabilityStatus : 'Blocked'}
                 </span>
               </div>
 
               {activeQuality.suitable ? (
-                <div className="rounded-lg border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/70 dark:bg-emerald-950/25 p-3 text-xs text-emerald-900 dark:text-emerald-200 flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <div
+                  className={`rounded-lg border p-3 text-xs flex items-center gap-2 ${
+                    activeQuality.overall === 'Acceptable' || activeQuality.qualityTier === 'Needs better image'
+                      ? 'border-amber-200 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-950/25 text-amber-900 dark:text-amber-200'
+                      : 'border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/70 dark:bg-emerald-950/25 text-emerald-900 dark:text-emerald-200'
+                  }`}
+                >
+                  {activeQuality.overall === 'Acceptable' || activeQuality.qualityTier === 'Needs better image' ? (
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                  ) : (
+                    <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                  )}
                   <span className="font-medium">{activeQuality.suitabilityMessage}</span>
                 </div>
               ) : (
@@ -694,14 +746,63 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
           )}
 
           {isAnalyzing && (
-            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-12 text-center space-y-3">
-              <Loader2 className="w-8 h-8 mx-auto animate-spin text-cyan-600 dark:text-cyan-400" />
-              <p className="font-display text-base font-semibold text-slate-900 dark:text-white">
-                IRIDEON is Analyzing Retinal Features & Attribution
-              </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Checking image quality, computing proliferation level (1–4), estimating vascular cues, and preparing visual explanations...
-              </p>
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-8 sm:p-10 space-y-6">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <Loader2 className="w-6 h-6 animate-spin text-cyan-600 dark:text-cyan-400 shrink-0" />
+                  <div>
+                    <p className="font-display text-base font-bold text-slate-900 dark:text-white">
+                      {analysisStageLabel || 'Analyzing retinal image...'}
+                    </p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      Running validation, technical quality checks, pixel saliency, and explanation packaging.
+                    </p>
+                  </div>
+                </div>
+
+                {onCancelAnalysis && (
+                  <button
+                    type="button"
+                    onClick={onCancelAnalysis}
+                    className="px-3.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:border-red-500 transition-colors shrink-0"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+                {[
+                  'Validating image...',
+                  'Assessing image quality...',
+                  'Running DR analysis...',
+                  'Generating explanation...',
+                ].map((stage, idx) => {
+                  const stageIdx = [
+                    'Validating image...',
+                    'Assessing image quality...',
+                    'Running DR analysis...',
+                    'Generating explanation...',
+                  ].indexOf(analysisStageLabel || 'Validating image...');
+                  const done = stageIdx > idx;
+                  const active = stageIdx === idx;
+                  return (
+                    <div
+                      key={stage}
+                      className={`rounded-lg border p-3 font-mono text-[11px] ${
+                        active
+                          ? 'border-cyan-500 bg-cyan-50/70 dark:bg-cyan-950/35 text-cyan-800 dark:text-cyan-200 font-semibold'
+                          : done
+                            ? 'border-emerald-300 dark:border-emerald-800 bg-emerald-50/50 dark:bg-emerald-950/25 text-emerald-800 dark:text-emerald-300'
+                            : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#090E1A] text-slate-400'
+                      }`}
+                    >
+                      {done ? '✓ ' : active ? '● ' : '○ '}
+                      {stage}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 
@@ -748,7 +849,7 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                   <div>
                     <p className="text-xs text-slate-500 dark:text-slate-400">
-                      Prediction confidence
+                      Model confidence estimate
                     </p>
                     <p className="font-mono text-xl font-bold tabular-nums text-cyan-700 dark:text-cyan-400 mt-0.5">
                       {analysis.confidence}%
@@ -790,7 +891,7 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
 
                 <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-100 dark:border-slate-800/80">
                   <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Screening support — not a standalone diagnosis. Output scores are prototype estimates.
+                    Screening support — not a standalone diagnosis. Confidence values are uncalibrated prototype estimates.
                   </p>
                   <div className="flex flex-wrap items-center gap-2">
                     <button
@@ -813,7 +914,20 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
                 </div>
               </div>
 
-              {/* Explainability Image Viewer */}
+              {/* 5-Class DR Educational Spectrum */}
+              <FiveClassScaleStrip analysis={analysis} />
+
+              {/* Dedicated Explainability Center Heading */}
+              <div className="pt-1">
+                <p className="text-xs font-mono text-cyan-700 dark:text-cyan-400">
+                  Visual XAI Inspection Center
+                </p>
+                <h2 className="font-display text-lg sm:text-xl font-bold text-slate-900 dark:text-white mt-0.5">
+                  WHY DID IRIDEON MAKE THIS PREDICTION?
+                </h2>
+              </div>
+
+              {/* Explainability Image Viewer (with 4-Panel Grid + Download PNG) */}
               <ExplainabilityViewer
                 imageUrl={imageUrl}
                 heatmapRegions={analysis.heatmapData.regions}
@@ -825,19 +939,24 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
                 onTabChange={setViewerTab}
                 colormap={colormap}
                 attributionNotice={analysis.modelMetadata.attributionNotice}
+                caseId={analysis.caseId}
+                predictionLabel={analysis.prediction}
               />
 
-              {/* "WHY THIS PREDICTION?" Card */}
+              {/* Structured "WHY THIS RESULT?" XAI Summary Card */}
+              <WhyThisResultCard analysis={analysis} />
+
+              {/* Feature Attribution Breakdown */}
               <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-5 space-y-4">
                 <div>
                   <p className="text-xs font-mono text-violet-700 dark:text-violet-400">
-                    IRIDEON Attribution Summary
+                    IRIDEON Attribution Breakdown
                   </p>
                   <h2 className="font-display text-lg font-bold text-slate-900 dark:text-white mt-0.5">
-                    WHY THIS PREDICTION?
+                    CONTRIBUTING VISUAL FACTORS
                   </h2>
                   <p className="text-sm text-slate-600 dark:text-slate-300 mt-1">
-                    IRIDEON identified several image patterns that contributed to the estimated severity.
+                    Relative weights of the visual cues that influenced the model output.
                   </p>
                 </div>
 
@@ -879,9 +998,17 @@ export const AnalysisWorkspace: React.FC<AnalysisWorkspaceProps> = ({
         </div>
       </div>
 
-      {/* Full-Width Deep Explainability + Proliferation 1-4 + Sugar/BP + Symptoms + IRIDEON Doubt Clarifier */}
+      {/* Full-Width Screening Decision Support + Inline Clinician Review + Deep Explainability + Proliferation 1-4 + Sugar/BP + Symptoms + IRIDEON Doubt Clarifier */}
       {analysis && !isAnalyzing && (
         <div className="space-y-8 pt-4">
+          <ScreeningDecisionSupportCard analysis={analysis} />
+
+          <InlineClinicianReviewCard
+            analysis={analysis}
+            doctorReview={activeDoctorReview}
+            onSaveClinicianDecision={onSaveClinicianDecision}
+          />
+
           <ClinicalIndicatorsPanel analysis={analysis} />
 
           <AIReasoningLens analysis={analysis} onFocusRegion={handleFocusRegion} />

@@ -47,9 +47,15 @@ export function evaluateClientQualityGate(
   const unsuitableReasons: string[] = [];
   if (stats.edgeSharpness < 32) unsuitableReasons.push('Image too blurry');
   if (stats.meanBrightness < 38) unsuitableReasons.push('Image too dark');
-  if (stats.meanBrightness > 212) unsuitableReasons.push('Image too bright');
-  if (stats.contrastStdDev < 18) unsuitableReasons.push('Low contrast');
-  if (stats.centerToEdgeRatio < 1.04 || stats.redChannelDominance < 0.28) {
+  if (stats.meanBrightness > 212) unsuitableReasons.push('Image too bright / overexposed');
+  if (stats.contrastStdDev < 18) unsuitableReasons.push('Poor contrast');
+
+  const blueDom = stats.blueChannelDominance ?? 0.2;
+  const nonRetinalColorProfile =
+    stats.redChannelDominance < 0.31 || blueDom > stats.redChannelDominance * 0.92;
+  if (nonRetinalColorProfile) {
+    unsuitableReasons.push('Non-retinal color profile detected (expected fundus image)');
+  } else if (stats.centerToEdgeRatio < 1.02 && stats.contrastStdDev < 24) {
     unsuitableReasons.push('Retina not sufficiently visible');
   }
   if (stats.artifactScore < 45) unsuitableReasons.push('Excessive glare or artifacts');
@@ -71,13 +77,31 @@ export function evaluateClientQualityGate(
   }
 
   const suitable = unsuitableReasons.length === 0 && overall !== 'Poor';
+  const qualityTier =
+    overall === 'Good' && suitable
+      ? ('Good' as const)
+      : suitable
+        ? ('Needs better image' as const)
+        : ('Invalid image' as const);
+  const qualityBadgeText =
+    qualityTier === 'Good'
+      ? ('✓ Good' as const)
+      : qualityTier === 'Needs better image'
+        ? ('⚠ Needs better image' as const)
+        : ('✕ Invalid image' as const);
+
   const suitabilityStatus = suitable ? 'Suitable for screening' : 'Unsuitable';
-  const suitabilityMessage = suitable
-    ? 'Image suitable for AI screening'
-    : 'Image quality is insufficient. Please capture/upload another retinal image.';
+  const suitabilityMessage =
+    qualityTier === 'Good'
+      ? 'Image suitable for AI screening'
+      : qualityTier === 'Needs better image'
+        ? 'Image usable with caution — higher illumination or sharper focus recommended'
+        : 'Image quality is insufficient. Please capture/upload another retinal image.';
   const actionRequired = suitable
-    ? null
-    : 'Capture or upload a clearer, properly illuminated retinal fundus image.';
+    ? qualityTier === 'Needs better image'
+      ? 'Optional: recapture with sharper focus and even macular illumination for clearer model attention.'
+      : null
+    : 'Capture or upload a clearer, properly illuminated retinal fundus photograph.';
 
   return {
     brightness: { label: 'Brightness', score: brightnessScore, status: scoreToStatus(brightnessScore) },
@@ -95,6 +119,9 @@ export function evaluateClientQualityGate(
       status: artifactScore >= 75 ? ('Low' as unknown as 'Good') : scoreToStatus(artifactScore),
     },
     overall,
+    qualityTier,
+    qualityBadgeText,
+    assessmentLabel: 'Technical image-quality assessment (pixel heuristics — not a validated clinical quality model)',
     suitable,
     suitabilityStatus,
     suitabilityMessage,
@@ -238,9 +265,9 @@ export async function computePixelSaliencyMap(dataUrl: string): Promise<{
             intensity: Number(clamp(c.val, 0.35, 0.96).toFixed(2)),
             label:
               peaks.length === 0
-                ? 'Primary Saliency Peak'
-                : `Activated Region #${peaks.length + 1}`,
-            featureType: 'Pixel Gradient & Contrast Saliency',
+                ? 'Model Attention Region #1'
+                : `Model Attention Region #${peaks.length + 1}`,
+            featureType: 'Model attention region (pixel gradient & contrast)',
           });
         }
         if (peaks.length >= 5) break;
@@ -423,7 +450,6 @@ export async function runOfflineLocalScreening(params: {
   const prolifLevel: 1 | 2 | 3 | 4 =
     prediction === 'No apparent DR' ? 1 : prediction === 'Mild' || prediction === 'Moderate' ? 2 : prediction === 'Severe' ? 3 : 4;
 
-  const isSevere = prolifLevel >= 3;
   const regions =
     saliency.peaks.length > 0
       ? saliency.peaks
@@ -477,83 +503,83 @@ export async function runOfflineLocalScreening(params: {
       {
         id: 'microaneurysms',
         name: 'Microaneurysms',
-        detected: prediction !== 'No apparent DR',
-        importance: prediction === 'No apparent DR' ? 'Low' : 'High',
-        approximateLocation: regions[0] ? `Peak (${regions[0].x}%, ${regions[0].y}%)` : 'Macular capillary field',
+        detected: false,
+        importance: 'Low',
+        approximateLocation: 'Lesion detection not supported offline without trained CNN weights',
         explanation:
-          prediction === 'No apparent DR'
-            ? 'No prominent dark punctate capillary dips flagged in offline local scan.'
-            : 'Local green-channel contrast identified focal punctate patterns; educational prototype estimate only.',
+          'Highlighted areas represent Model Attention Regions (green-channel contrast dips), not verified microaneurysm detections.',
         coordinates: { x: regions[0]?.x ?? 42, y: regions[0]?.y ?? 42, radius: 10 },
       },
       {
         id: 'hemorrhages',
         name: 'Hemorrhages',
-        detected: prolifLevel >= 2,
-        importance: isSevere ? 'High' : 'Medium',
-        approximateLocation: regions[1] ? `Peak (${regions[1].x}%, ${regions[1].y}%)` : 'Inferior arcade',
-        explanation: 'Offline contrast variance detected dark-red blot-like pixel clusters.',
+        detected: false,
+        importance: 'Low',
+        approximateLocation: 'Lesion detection not supported offline without trained CNN weights',
+        explanation:
+          'Pixel contrast heuristics cannot distinguish intraretinal hemorrhages from vessel crossings or dark pigmentation.',
         coordinates: { x: regions[1]?.x ?? 35, y: regions[1]?.y ?? 62, radius: 11 },
       },
       {
         id: 'hard-exudates',
         name: 'Hard exudates',
-        detected: prolifLevel >= 2,
-        importance: isSevere ? 'High' : 'Medium',
-        approximateLocation: regions[2] ? `Peak (${regions[2].x}%, ${regions[2].y}%)` : 'Parafoveal field',
-        explanation: 'Local luminance spikes relative to median retinal tone.',
+        detected: false,
+        importance: 'Low',
+        approximateLocation: 'Lesion detection not supported offline without trained CNN weights',
+        explanation:
+          'Bright luminance spikes may reflect the optic disc, nerve fiber reflections, or drusen rather than exudates.',
         coordinates: { x: regions[2]?.x ?? 54, y: regions[2]?.y ?? 55, radius: 10 },
       },
       {
         id: 'cotton-wool-spots',
         name: 'Cotton-wool spots',
-        detected: prolifLevel >= 3,
-        importance: isSevere ? 'Medium' : 'Low',
-        approximateLocation: 'Superior vascular arcade',
-        explanation: isSevere ? 'Diffuse pale patches detected.' : 'None prominent in offline pass.',
+        detected: false,
+        importance: 'Low',
+        approximateLocation: 'Requires specialist or trained segmentation model',
+        explanation: 'Clinical lesion segmentation is unavailable in Offline Prototype Mode.',
         coordinates: { x: 56, y: 31, radius: 10 },
       },
       {
         id: 'venous-abnormalities',
         name: 'Venous abnormalities',
-        detected: prolifLevel >= 3,
-        importance: isSevere ? 'Medium' : 'Low',
-        approximateLocation: 'Primary arcades',
-        explanation: 'Estimated from local vessel gradient asymmetry.',
+        detected: false,
+        importance: 'Low',
+        approximateLocation: 'Requires specialist or trained segmentation model',
+        explanation: 'Venous beading/caliber grading requires clinical inspection or trained vascular segmentation.',
         coordinates: { x: 60, y: 36, radius: 11 },
       },
       {
         id: 'neovascularization',
         name: 'Neovascularization',
-        detected: prolifLevel === 4,
-        importance: prolifLevel === 4 ? 'High' : 'Low',
-        approximateLocation: 'Disc margin',
-        explanation: 'Requires specialist clinical confirmation.',
+        detected: false,
+        importance: 'Low',
+        approximateLocation: 'Requires specialist or trained segmentation model',
+        explanation: 'Proliferative neovascular detection requires clinical evaluation by an ophthalmologist.',
         coordinates: { x: 72, y: 48, radius: 10 },
       },
       {
         id: 'optic-disc',
-        name: 'Optic disc',
+        name: 'Optic disc (High-luminance structural cue)',
         detected: true,
-        importance: 'Low',
-        approximateLocation: 'Anatomical landmark',
-        explanation: 'High-luminance circular anchor used for spatial normalization.',
+        importance: 'Medium',
+        approximateLocation: regions[0] ? `Attention peak (${regions[0].x}%, ${regions[0].y}%)` : 'Central-nasal ROI',
+        explanation: 'Bright circular illumination regions influence local contrast saliency normalization.',
         coordinates: { x: 74, y: 50, radius: 11 },
       },
       {
         id: 'blood-vessels',
-        name: 'Blood vessels',
+        name: 'Vessel edge gradients',
         detected: true,
-        importance: 'Medium',
-        approximateLocation: 'Superior & inferior arcades',
-        explanation: 'Detected via green-channel local Sobel/gradient energy.',
+        importance: 'High',
+        approximateLocation: 'Global circular retinal FOV',
+        explanation: 'Detected directly via on-device green-channel local gradient energy.',
         coordinates: { x: 50, y: 38, radius: 16 },
       },
     ],
     featureContributions: [
       {
         id: 'off-1',
-        label: 'Local green-channel vessel & lesion gradient',
+        label: 'Model attention region (Green-channel gradient)',
         category: 'Pixel Saliency',
         weight: 46,
         importance: 'High',
@@ -561,33 +587,33 @@ export async function runOfflineLocalScreening(params: {
       },
       {
         id: 'off-2',
-        label: 'Bright localized contrast peaks',
+        label: 'Local luminance & dark/bright contrast variation',
         category: 'Luminance',
         weight: 30,
         importance: 'Medium',
-        description: 'Relative bright cluster energy inside circular retinal mask.',
+        description: 'Relative bright/dark cluster energy inside circular retinal mask.',
       },
       {
         id: 'off-3',
-        label: 'Global vascular structure symmetry',
+        label: 'Global retinal sharpness & illumination profile',
         category: 'Structural',
         weight: 24,
         importance: 'Low',
-        description: 'Edge sharpness and center-to-rim fundus illumination profile.',
+        description: 'Laplacian edge sharpness and center-to-rim fundus illumination.',
       },
     ],
     evidenceTrail: regions.slice(0, 3).map((r, i) => ({
       id: `off-ev-${i + 1}`,
       step: i + 1,
       region: r.label,
-      feature: r.featureType,
+      feature: 'Model attention region (pixel saliency)',
       contribution: r.intensity > 0.7 ? 'High' : 'Medium',
       coordinates: { x: r.x, y: r.y, zoom: 2.3 },
-      rationale: `On-device pixel saliency measured ${Math.round(r.intensity * 100)}% normalized activation around (${r.x}%, ${r.y}%).`,
+      rationale: `On-device pixel saliency measured ${Math.round(r.intensity * 100)}% normalized attention around (${r.x}%, ${r.y}%). This highlights image contrast regions rather than confirmed lesions.`,
     })),
     explanation: {
       summary:
-        'Screening completed offline using on-device pixel quality checks, green-channel saliency mapping, and prototype severity estimation. Record is saved locally and queued for synchronization.',
+        'Screening completed offline using on-device technical quality checks, green-channel pixel saliency mapping, and exploratory severity heuristics. Record is saved locally and queued for synchronization.',
       reasoningSteps: [
         {
           stageId: 'input',
@@ -692,10 +718,32 @@ export async function runOfflineLocalScreening(params: {
       modelName: 'IRIDEON Offline On-Device Prototype',
       mode: 'OFFLINE_LOCAL_PROTOTYPE',
       attributionNotice:
-        'The highlighted regions indicate areas that influenced the model’s prediction. This visualization is an AI explanation aid and is not clinical proof.',
+        'The highlighted regions indicate Model Attention Regions that influenced the heuristic output. This visualization is an AI explanation aid and is not clinical proof of lesions.',
       explainabilityMethod: 'On-Device 24×24 Green-Channel & Contrast Saliency (Prototype)',
       disclaimer:
         'Research and educational use only. Screening support — not a standalone diagnosis.',
+    },
+    decisionSupport: {
+      riskLevel:
+        reliabilityStatus === 'professional_review_required' || prolifLevel >= 3
+          ? 'URGENT REVIEW'
+          : prediction === 'No apparent DR' && finalUncertainty === 'Low'
+            ? 'LOW RISK'
+            : 'REVIEW RECOMMENDED',
+      interpretation:
+        reliabilityStatus === 'professional_review_required'
+          ? 'Uncertainty or image quality limits prevent reliable automated interpretation.'
+          : prediction === 'No apparent DR'
+            ? 'No prominent high-contrast abnormal pattern flagged in local offline heuristics.'
+            : `Exploratory pixel contrast heuristics aligned closer to ${prediction} patterns (unvalidated prototype).`,
+      suggestedAction:
+        reliabilityStatus === 'professional_review_required' || prolifLevel >= 3
+          ? 'Schedule prompt evaluation with a qualified ophthalmologist and recapture higher-clarity images if blurry.'
+          : prediction === 'No apparent DR'
+            ? 'Sync record when connected and continue routine periodic dilated eye checkups.'
+            : 'Refer for specialist retinal examination to confirm findings with clinical grading.',
+      disclaimer:
+        'IRIDEON is an AI-assisted research/screening prototype and is not a substitute for professional medical diagnosis or clinical judgment.',
     },
   };
 }

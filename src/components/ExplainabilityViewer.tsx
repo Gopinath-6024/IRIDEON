@@ -7,11 +7,14 @@ import {
   EyeOff,
   SlidersHorizontal,
   Info,
+  Download,
+  LayoutGrid,
 } from 'lucide-react';
 import { generateSobelEdgeDataUrl } from '../utils/fundusGenerator';
 import type { DetectedFeature, HeatmapRegion } from '../types/retina';
 
 export type ViewerTab =
+  | 'grid'
   | 'original'
   | 'attention'
   | 'heatmap'
@@ -37,15 +40,18 @@ interface ExplainabilityViewerProps {
   onTabChange: (tab: ViewerTab) => void;
   colormap?: 'thermal' | 'clinical';
   attributionNotice: string;
+  caseId?: string;
+  predictionLabel?: string;
 }
 
 const VIEWER_TABS: { id: ViewerTab; label: string }[] = [
-  { id: 'original', label: 'Original' },
-  { id: 'attention', label: 'Attention Map' },
+  { id: 'grid', label: '4-Panel Grid' },
   { id: 'heatmap', label: 'Retina Map (Heatmap)' },
+  { id: 'attention', label: 'Attention Map' },
   { id: 'features', label: 'Feature Overlay' },
-  { id: 'edges', label: 'Edge/Structure View' },
-  { id: 'comparison', label: 'Overlay Comparison' },
+  { id: 'edges', label: 'Edge/Structure' },
+  { id: 'comparison', label: 'Before/After' },
+  { id: 'original', label: 'Original' },
 ];
 
 export const ExplainabilityViewer: React.FC<ExplainabilityViewerProps> = ({
@@ -59,6 +65,8 @@ export const ExplainabilityViewer: React.FC<ExplainabilityViewerProps> = ({
   onTabChange,
   colormap = 'thermal',
   attributionNotice,
+  caseId,
+  predictionLabel,
 }) => {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -160,8 +168,80 @@ export const ExplainabilityViewer: React.FC<ExplainabilityViewerProps> = ({
     setPan({ x: 0, y: 0 });
   };
 
+  const handleDownloadExplanationPng = async () => {
+    try {
+      const size = 640;
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size + 56;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      ctx.fillStyle = '#070B14';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const loadImg = (src: string) =>
+        new Promise<HTMLImageElement>((resolve, reject) => {
+          const im = new Image();
+          im.onload = () => resolve(im);
+          im.onerror = reject;
+          im.src = src;
+        });
+
+      const baseImg = await loadImg(imageUrl);
+      ctx.drawImage(baseImg, 0, 0, size, size);
+
+      if (overlayEnabled && pixelHeatmapUrl) {
+        const heatImg = await loadImg(pixelHeatmapUrl);
+        ctx.save();
+        ctx.globalAlpha = opacity / 100;
+        ctx.globalCompositeOperation = 'screen';
+        ctx.drawImage(heatImg, 0, 0, size, size);
+        ctx.restore();
+      } else if (overlayEnabled) {
+        for (const reg of heatmapRegions) {
+          const cx = (reg.x / 100) * size;
+          const cy = (reg.y / 100) * size;
+          const rad = (reg.radius / 100) * size;
+          const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
+          grad.addColorStop(0, `rgba(239, 68, 68, ${Math.min(0.85, reg.intensity * (opacity / 100))})`);
+          grad.addColorStop(0.55, `rgba(245, 158, 11, ${reg.intensity * 0.45 * (opacity / 100)})`);
+          grad.addColorStop(1, 'rgba(6, 182, 212, 0)');
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      ctx.fillStyle = '#0D1322';
+      ctx.fillRect(0, size, size, 56);
+      ctx.fillStyle = '#22d3ee';
+      ctx.font = 'bold 14px monospace';
+      ctx.fillText(
+        `IRIDEON XAI EXPLANATION · ${caseId ?? 'CASE'} · ${predictionLabel ?? 'PROTOTYPE'}`,
+        16,
+        size + 22
+      );
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '11px sans-serif';
+      ctx.fillText(
+        'Model Attention Visualization — Research & Educational Use Only (Not a Clinical Diagnosis)',
+        16,
+        size + 42
+      );
+
+      const link = document.createElement('a');
+      link.download = `IRIDEON-Explanation-${caseId ?? 'case'}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    } catch {
+      // ignore canvas export errors silently
+    }
+  };
+
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (activeTab === 'comparison') return;
+    if (activeTab === 'comparison' || activeTab === 'grid') return;
     setIsDragging(true);
     dragStartRef.current = {
       x: e.clientX,
@@ -394,8 +474,18 @@ export const ExplainabilityViewer: React.FC<ExplainabilityViewerProps> = ({
           })}
         </div>
 
-        {/* Zoom / Pan / Reset Controls */}
-        <div className="flex items-center gap-1.5">
+        {/* Zoom / Pan / Reset / Export Controls */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            onClick={handleDownloadExplanationPng}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200 hover:border-cyan-500 transition-colors whitespace-nowrap mr-1"
+            title="Download composited explanation PNG"
+          >
+            <Download className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400" />
+            <span>Download PNG</span>
+          </button>
+
           <button
             type="button"
             onClick={() => setZoom((z) => Math.max(1, Number((z - 0.35).toFixed(2))))}
@@ -436,17 +526,160 @@ export const ExplainabilityViewer: React.FC<ExplainabilityViewerProps> = ({
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
-        className={`relative bg-[#04060B] aspect-square max-h-[520px] w-full overflow-hidden select-none ${
-          activeTab === 'comparison'
-            ? 'cursor-ew-resize'
-            : zoom > 1
-              ? isDragging
-                ? 'cursor-grabbing'
-                : 'cursor-grab'
-              : 'cursor-crosshair'
+        className={`relative bg-[#04060B] w-full overflow-hidden select-none ${
+          activeTab === 'grid'
+            ? 'p-3 sm:p-4'
+            : activeTab === 'comparison'
+              ? 'aspect-square max-h-[520px] cursor-ew-resize'
+              : zoom > 1
+                ? isDragging
+                  ? 'aspect-square max-h-[520px] cursor-grabbing'
+                  : 'aspect-square max-h-[520px] cursor-grab'
+                : 'aspect-square max-h-[520px] cursor-crosshair'
         }`}
       >
-        {activeTab === 'comparison' ? (
+        {activeTab === 'grid' ? (
+          /* 4-Panel Simultaneous Research Inspection Grid */
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {/* Panel 1: Original */}
+            <div className="rounded-lg border border-slate-800 bg-[#070B14] overflow-hidden">
+              <div className="px-3 py-1.5 border-b border-slate-800 flex items-center justify-between text-[11px] font-mono text-slate-300">
+                <span>1. Original Retinal Image</span>
+                <span className="text-slate-500">Input ROI</span>
+              </div>
+              <div className="relative aspect-square max-h-[240px] mx-auto flex items-center justify-center bg-black">
+                <img
+                  src={imageUrl}
+                  alt="Original retinal image"
+                  referrerPolicy="no-referrer"
+                  className="w-full h-full object-contain"
+                />
+              </div>
+            </div>
+
+            {/* Panel 2: Attention / Saliency Heatmap */}
+            <div className="rounded-lg border border-slate-800 bg-[#070B14] overflow-hidden">
+              <div className="px-3 py-1.5 border-b border-slate-800 flex items-center justify-between text-[11px] font-mono text-cyan-300">
+                <span>2. Attention Heatmap</span>
+                <span className="text-slate-400">Model Attention</span>
+              </div>
+              <div className="relative aspect-square max-h-[240px] mx-auto flex items-center justify-center bg-black">
+                <img
+                  src={imageUrl}
+                  alt="Model attention heatmap background"
+                  referrerPolicy="no-referrer"
+                  className="w-full h-full object-contain opacity-35"
+                />
+                {pixelHeatmapUrl ? (
+                  <img
+                    src={pixelHeatmapUrl}
+                    alt="Computed pixel saliency heatmap"
+                    className="absolute inset-0 w-full h-full object-contain mix-blend-screen"
+                    style={{ opacity: Math.min(1, opacity / 90) }}
+                  />
+                ) : (
+                  <svg viewBox="0 0 100 100" className="absolute inset-0 w-full h-full pointer-events-none">
+                    <defs>
+                      {heatmapRegions.map((reg, idx) => (
+                        <radialGradient key={`g2-def-${idx}`} id={`g2-grad-${idx}`} cx="50%" cy="50%" r="50%">
+                          <stop offset="0%" stopColor={reg.intensity > 0.7 ? '#ef4444' : '#f59e0b'} stopOpacity={reg.intensity * 0.85} />
+                          <stop offset="60%" stopColor="#06b6d4" stopOpacity={reg.intensity * 0.35} />
+                          <stop offset="100%" stopColor="#06b6d4" stopOpacity="0" />
+                        </radialGradient>
+                      ))}
+                    </defs>
+                    {heatmapRegions.map((reg, idx) => (
+                      <circle
+                        key={`g-hm-${idx}`}
+                        cx={reg.x}
+                        cy={reg.y}
+                        r={reg.radius}
+                        fill={`url(#g2-grad-${idx})`}
+                      />
+                    ))}
+                  </svg>
+                )}
+              </div>
+            </div>
+
+            {/* Panel 3: Structural & Vessel Edge Contrast */}
+            <div className="rounded-lg border border-slate-800 bg-[#070B14] overflow-hidden">
+              <div className="px-3 py-1.5 border-b border-slate-800 flex items-center justify-between text-[11px] font-mono text-emerald-300">
+                <span>3. Vessel & Edge Contrast</span>
+                <span className="text-slate-400">Sobel Green</span>
+              </div>
+              <div className="relative aspect-square max-h-[240px] mx-auto flex items-center justify-center bg-black">
+                <img
+                  src={edgeUrl || imageUrl}
+                  alt="Green-channel Sobel structural vessel contrast map"
+                  referrerPolicy="no-referrer"
+                  className="w-full h-full object-contain"
+                />
+              </div>
+            </div>
+
+            {/* Panel 4: Combined Explanation Overlay */}
+            <div className="rounded-lg border border-slate-800 bg-[#070B14] overflow-hidden">
+              <div className="px-3 py-1.5 border-b border-slate-800 flex items-center justify-between text-[11px] font-mono text-amber-300">
+                <span>4. Combined Explanation</span>
+                <span className="inline-flex items-center gap-1 text-cyan-400">
+                  <LayoutGrid className="w-3 h-3" />
+                  <span>Overlay</span>
+                </span>
+              </div>
+              <div className="relative aspect-square max-h-[240px] mx-auto flex items-center justify-center bg-black">
+                <img
+                  src={imageUrl}
+                  alt="Combined retinal explanation overlay"
+                  referrerPolicy="no-referrer"
+                  className="w-full h-full object-contain"
+                />
+                {overlayEnabled && pixelHeatmapUrl && (
+                  <img
+                    src={pixelHeatmapUrl}
+                    alt=""
+                    aria-hidden="true"
+                    className="absolute inset-0 w-full h-full object-contain pointer-events-none mix-blend-screen"
+                    style={{ opacity: opacity / 100 }}
+                  />
+                )}
+                {overlayEnabled && (
+                  <svg
+                    viewBox="0 0 100 100"
+                    className="absolute inset-0 w-full h-full pointer-events-none"
+                    style={{ opacity: opacity / 100 }}
+                  >
+                    <defs>
+                      {heatmapRegions.map((reg, idx) => (
+                        <radialGradient key={`g4-def-${idx}`} id={`g4-grad-${idx}`} cx="50%" cy="50%" r="50%">
+                          <stop offset="0%" stopColor={reg.intensity > 0.7 ? '#ef4444' : '#f59e0b'} stopOpacity={reg.intensity * 0.85} />
+                          <stop offset="60%" stopColor="#06b6d4" stopOpacity={reg.intensity * 0.35} />
+                          <stop offset="100%" stopColor="#06b6d4" stopOpacity="0" />
+                        </radialGradient>
+                      ))}
+                    </defs>
+                    {heatmapRegions.map((reg, idx) => (
+                      <g key={`comb-${idx}`}>
+                        {!pixelHeatmapUrl && (
+                          <circle cx={reg.x} cy={reg.y} r={reg.radius} fill={`url(#g4-grad-${idx})`} />
+                        )}
+                        <circle
+                          cx={reg.x}
+                          cy={reg.y}
+                          r={reg.radius * 0.65}
+                          fill="none"
+                          stroke="#22d3ee"
+                          strokeWidth="0.6"
+                          strokeDasharray="1.5 1"
+                        />
+                      </g>
+                    ))}
+                  </svg>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : activeTab === 'comparison' ? (
           /* Interactive Draggable Before/After Comparison View */
           <div className="relative w-full h-full flex items-center justify-center">
             <div className="relative w-full h-full max-w-[520px] max-h-[520px] mx-auto">

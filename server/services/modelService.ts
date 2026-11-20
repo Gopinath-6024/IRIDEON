@@ -136,11 +136,18 @@ export function evaluateImageQuality(
   if (stats) {
     if (stats.edgeSharpness < 32) unsuitableReasons.push('Image too blurry');
     if (stats.meanBrightness < 38) unsuitableReasons.push('Image too dark');
-    if (stats.meanBrightness > 212) unsuitableReasons.push('Image too bright');
-    if (stats.contrastStdDev < 18) unsuitableReasons.push('Low contrast');
-    if (stats.centerToEdgeRatio < 1.04 || stats.redChannelDominance < 0.28) {
+    if (stats.meanBrightness > 212) unsuitableReasons.push('Image too bright / overexposed');
+    if (stats.contrastStdDev < 18) unsuitableReasons.push('Poor contrast');
+
+    const blueDom = stats.blueChannelDominance ?? 0.2;
+    const nonRetinalColorProfile =
+      stats.redChannelDominance < 0.31 || blueDom > stats.redChannelDominance * 0.92;
+    if (nonRetinalColorProfile) {
+      unsuitableReasons.push('Non-retinal color profile detected (expected fundus image)');
+    } else if (stats.centerToEdgeRatio < 1.02 && stats.contrastStdDev < 24) {
       unsuitableReasons.push('Retina not sufficiently visible');
     }
+
     if (stats.artifactScore < 45) unsuitableReasons.push('Excessive glare or artifacts');
   } else if (Math.min(info.width, info.height) < 200) {
     unsuitableReasons.push('Image too blurry');
@@ -163,13 +170,31 @@ export function evaluateImageQuality(
   }
 
   const suitable = unsuitableReasons.length === 0 && overall !== 'Poor';
+  const qualityTier =
+    overall === 'Good' && suitable
+      ? ('Good' as const)
+      : suitable
+        ? ('Needs better image' as const)
+        : ('Invalid image' as const);
+  const qualityBadgeText =
+    qualityTier === 'Good'
+      ? ('✓ Good' as const)
+      : qualityTier === 'Needs better image'
+        ? ('⚠ Needs better image' as const)
+        : ('✕ Invalid image' as const);
+
   const suitabilityStatus = suitable ? 'Suitable for screening' : 'Unsuitable';
-  const suitabilityMessage = suitable
-    ? 'Image suitable for AI screening'
-    : 'Image quality is insufficient. Please capture/upload another retinal image.';
+  const suitabilityMessage =
+    qualityTier === 'Good'
+      ? 'Image suitable for AI screening'
+      : qualityTier === 'Needs better image'
+        ? 'Image usable with caution — higher illumination or sharper focus recommended'
+        : 'Image quality is insufficient. Please capture/upload another retinal image.';
   const actionRequired = suitable
-    ? null
-    : 'Capture or upload a clearer, properly illuminated retinal fundus image.';
+    ? qualityTier === 'Needs better image'
+      ? 'Optional: recapture with sharper focus and even macular illumination for clearer model attention.'
+      : null
+    : 'Capture or upload a clearer, properly illuminated retinal fundus photograph.';
 
   const warning = suitable
     ? null
@@ -191,6 +216,9 @@ export function evaluateImageQuality(
       status: artifactScore >= 75 ? ('Low' as unknown as 'Good') : scoreToStatus(artifactScore),
     },
     overall,
+    qualityTier,
+    qualityBadgeText,
+    assessmentLabel: 'Technical image-quality assessment (pixel heuristics — not a validated clinical quality model)',
     suitable,
     suitabilityStatus,
     suitabilityMessage,
@@ -1120,7 +1148,13 @@ class DemoEducationalModelAdapter implements RetinalModelAdapter {
         reliabilityLabel: reliability.reliabilityLabel,
         reliabilityMessage: reliability.reliabilityMessage,
         uncertaintyFactors: demo.uncertaintyFactors,
-        imageQuality: demo.quality,
+        imageQuality: {
+          ...demo.quality,
+          qualityTier: 'Good',
+          qualityBadgeText: '✓ Good',
+          assessmentLabel:
+            'Technical image-quality assessment (synthetic demo baseline — not a validated clinical quality model)',
+        },
         detectedFeatures: demo.detectedFeatures,
         featureContributions: demo.featureContributions,
         evidenceTrail: demo.evidenceTrail,
@@ -1147,6 +1181,28 @@ class DemoEducationalModelAdapter implements RetinalModelAdapter {
         systemicEstimates: extraData.systemicEstimates,
         proliferationGrading: extraData.proliferationGrading,
         symptoms: extraData.symptoms,
+        decisionSupport: {
+          riskLevel:
+            demo.prediction === 'Severe' || demo.prediction === 'Proliferative'
+              ? 'URGENT REVIEW'
+              : demo.prediction === 'No apparent DR' && reliability.uncertainty === 'Low'
+                ? 'LOW RISK'
+                : 'REVIEW RECOMMENDED',
+          interpretation:
+            demo.prediction === 'Severe' || demo.prediction === 'Proliferative'
+              ? `Synthetic demonstration shows ${demo.prediction} patterns (Proliferation Level ${extraData.proliferationGrading.level}/4).`
+              : demo.prediction === 'No apparent DR'
+                ? 'Synthetic baseline demonstration shows balanced retinal vessels without prominent abnormal regions.'
+                : `Synthetic demonstration exhibits ${demo.prediction} pattern cues requiring routine clinical interpretation.`,
+          suggestedAction:
+            demo.prediction === 'Severe' || demo.prediction === 'Proliferative'
+              ? 'Prompt ophthalmologist evaluation would be prioritized in a clinical workflow.'
+              : demo.prediction === 'No apparent DR'
+                ? 'Routine periodic retinal checkup schedule applies in standard screening education.'
+                : 'Specialist follow-up and clinical dilated exam recommended to verify visual findings.',
+          disclaimer:
+            'IRIDEON is an AI-assisted research/screening prototype and is not a substitute for professional medical diagnosis or clinical judgment.',
+        },
         modelMetadata: {
           modelName: this.adapterName,
           mode: this.mode,
@@ -1169,9 +1225,9 @@ class DemoEducationalModelAdapter implements RetinalModelAdapter {
     const stats = input.pixelStats;
 
     // Derive deterministic educational demo output reflecting real uploaded pixel characteristics
-    const isLowQuality = quality.overall === 'Poor';
     const contrast = stats?.contrastStdDev ?? 38;
     const redDom = stats?.redChannelDominance ?? 0.45;
+    const isLowQuality = quality.overall === 'Poor';
 
     let prediction: DRGrade = 'Mild';
     let confidence = 71;
@@ -1195,45 +1251,166 @@ class DemoEducationalModelAdapter implements RetinalModelAdapter {
       uncertainty = 'Moderate';
     }
 
-    const basePreset =
-      prediction === 'Moderate'
-        ? DEMO_CASES['demo-b']
-        : prediction === 'No apparent DR'
-          ? DEMO_CASES['demo-a']
-          : DEMO_CASES['demo-b'];
-
     const uploadedUncertaintyFactors: UncertaintyFactor[] = [
       {
-        factor: 'Prototype model not trained on uploaded clinical cohort',
+        factor: 'Prototype heuristic analyzer (no clinical DR weights)',
         impact: 'High',
         active: true,
         description:
-          'No validated clinical DR weights are connected; outputs illustrate the XAI pipeline on your uploaded image metrics.',
+          'No validated clinical DR CNN weights are connected; outputs demonstrate the XAI pipeline using pixel contrast & green-channel saliency.',
       },
       {
-        factor: 'Poor image quality',
+        factor: 'Technical image quality',
         impact: isLowQuality ? 'High' : 'Low',
         active: isLowQuality,
         description: isLowQuality
-          ? 'Low sharpness, suboptimal illumination, or artifacts degrade reliable feature attribution.'
-          : 'Measured sharpness and brightness are within acceptable demonstration ranges.',
+          ? 'Low sharpness, suboptimal illumination, or artifacts degrade reliable visual attribution.'
+          : 'Measured sharpness and brightness passed prototype technical checks.',
       },
       {
         factor: 'Unusual retinal appearance / domain shift',
         impact: 'Medium',
         active: true,
         description:
-          'Camera field-of-view, illumination color balance, and resolution differ from standard reference distributions.',
+          'Uploaded camera field-of-view, illumination balance, and resolution differ from standardized reference cohorts.',
       },
     ];
 
-    const detectedFeatures = basePreset.detectedFeatures.map((f) => ({
-      ...f,
-      detected:
-        prediction === 'No apparent DR'
-          ? f.id === 'optic-disc' || f.id === 'blood-vessels'
-          : f.detected,
-    }));
+    // Truthful feature breakdown for uploaded images without ML_BACKEND_URL:
+    // NEVER fabricate lesion locations or claim lesions were detected by a non-CNN heuristic.
+    const detectedFeatures: DetectedFeature[] = [
+      {
+        id: 'microaneurysms',
+        name: 'Microaneurysms',
+        detected: false,
+        importance: 'Low',
+        approximateLocation: 'Lesion detection unavailable without trained CNN backend',
+        explanation:
+          'Prototype Mode does not perform clinical microaneurysm segmentation. Highlighted heatmap overlays show Model Attention Regions (contrast & gradient peaks) only.',
+        coordinates: { x: 48, y: 48, radius: 8 },
+      },
+      {
+        id: 'hemorrhages',
+        name: 'Hemorrhages',
+        detected: false,
+        importance: 'Low',
+        approximateLocation: 'Lesion detection unavailable without trained CNN backend',
+        explanation:
+          'Pixel contrast heuristics cannot distinguish intraretinal hemorrhages from normal choroidal variation or vessel crossings.',
+        coordinates: { x: 40, y: 56, radius: 9 },
+      },
+      {
+        id: 'hard-exudates',
+        name: 'Hard exudates',
+        detected: false,
+        importance: 'Low',
+        approximateLocation: 'Lesion detection unavailable without trained CNN backend',
+        explanation:
+          'Bright luminance spikes may reflect the optic disc, specular reflections, or drusen rather than confirmed exudates.',
+        coordinates: { x: 54, y: 54, radius: 8 },
+      },
+      {
+        id: 'cotton-wool-spots',
+        name: 'Cotton-wool spots',
+        detected: false,
+        importance: 'Low',
+        approximateLocation: 'Requires specialist or trained CNN evaluation',
+        explanation: 'Not evaluated by classical pixel saliency heuristics.',
+        coordinates: { x: 56, y: 32, radius: 9 },
+      },
+      {
+        id: 'venous-abnormalities',
+        name: 'Venous abnormalities',
+        detected: false,
+        importance: 'Low',
+        approximateLocation: 'Requires specialist or trained CNN evaluation',
+        explanation: 'Venous caliber beading requires dedicated vascular segmentation or clinician inspection.',
+        coordinates: { x: 60, y: 36, radius: 10 },
+      },
+      {
+        id: 'neovascularization',
+        name: 'Neovascularization',
+        detected: false,
+        importance: 'Low',
+        approximateLocation: 'Requires specialist or trained CNN evaluation',
+        explanation: 'Proliferative neovascular tufts cannot be confirmed without clinical evaluation.',
+        coordinates: { x: 74, y: 50, radius: 10 },
+      },
+      {
+        id: 'optic-disc',
+        name: 'High-luminance structural landmark cues',
+        detected: true,
+        importance: 'Medium',
+        approximateLocation: 'Evaluated across uploaded retinal ROI',
+        explanation:
+          'Bright disc-like luminance anchors spatial contrast normalization during technical quality & saliency checks.',
+        coordinates: { x: 74, y: 50, radius: 11 },
+      },
+      {
+        id: 'blood-vessels',
+        name: 'Green-channel edge & contrast structure',
+        detected: true,
+        importance: 'High',
+        approximateLocation: `Global circular ROI (Contrast σ=${contrast.toFixed(1)}, Sharpness=${quality.sharpness.score}%)`,
+        explanation:
+          'Measured directly from uploaded pixels via Laplacian edge sharpness and green-channel Sobel gradients.',
+        coordinates: { x: 50, y: 42, radius: 18 },
+      },
+    ];
+
+    const contrastWeight = Math.round(clamp((contrast / 65) * 55, 25, 55));
+    const sharpnessWeight = Math.round(clamp((quality.sharpness.score / 100) * 35, 18, 35));
+    const redWeight = Math.max(10, 100 - contrastWeight - sharpnessWeight);
+
+    const featureContributions: FeatureContribution[] = [
+      {
+        id: 'up-c1',
+        label: 'Model attention region (Green-channel contrast variance)',
+        category: 'Pixel Saliency',
+        weight: contrastWeight,
+        importance: contrastWeight >= 40 ? 'High' : 'Medium',
+        description: `Measured global luminance standard deviation (σ=${contrast.toFixed(1)}) inside the retinal field.`,
+      },
+      {
+        id: 'up-c2',
+        label: 'Retinal vessel & edge gradient energy',
+        category: 'Structural',
+        weight: sharpnessWeight,
+        importance: 'Medium',
+        description: `Laplacian edge sharpness (${quality.sharpness.score}%) and green-channel structural edges.`,
+      },
+      {
+        id: 'up-c3',
+        label: 'Warm choroidal / red-channel spectral balance',
+        category: 'Colorimetric',
+        weight: redWeight,
+        importance: 'Low',
+        description: `Red-channel proportion (${Math.round(redDom * 100)}%) across the illuminated fundus area.`,
+      },
+    ];
+
+    const evidenceTrail: EvidenceItem[] = [
+      {
+        id: 'up-ev-1',
+        step: 1,
+        region: 'Uploaded Retina ROI',
+        feature: 'Model attention region (Pixel saliency peaks)',
+        contribution: 'High',
+        coordinates: { x: 50, y: 50, zoom: 1.6 },
+        rationale:
+          'Client-side 24×24 pixel saliency extracts the top contrast & green-channel gradient hotspots directly from your uploaded image.',
+      },
+      {
+        id: 'up-ev-2',
+        step: 2,
+        region: 'Technical Quality & Contrast Profile',
+        feature: `Contrast σ=${contrast.toFixed(1)} · Sharpness ${quality.sharpness.score}%`,
+        contribution: 'Medium',
+        coordinates: { x: 46, y: 50, zoom: 1.4 },
+        rationale:
+          'Prototype heuristic maps measured image contrast and red-channel balance into exploratory educational tiers (connect ML_BACKEND_URL for CNN inference).',
+      },
+    ];
 
     const detectedCount = detectedFeatures.filter((f) => f.detected).length;
 
@@ -1280,34 +1457,62 @@ class DemoEducationalModelAdapter implements RetinalModelAdapter {
       uncertaintyFactors: uploadedUncertaintyFactors,
       imageQuality: quality,
       detectedFeatures,
-      featureContributions: basePreset.featureContributions,
-      evidenceTrail: basePreset.evidenceTrail,
+      featureContributions,
+      evidenceTrail,
       explanation: {
         summary: isLowQuality
-          ? 'Uploaded image quality was rated Unsuitable, resulting in High uncertainty. Professional review is required before relying on any output.'
-          : 'Your uploaded image passed format, resolution, and pixel quality checks. Because no external CNN Grad-CAM backend is connected, IRIDEON pairs pixel-level green-channel saliency with prototype scoring.',
+          ? 'Uploaded image failed technical quality checks, resulting in High uncertainty. Capture a clearer image and seek specialist review.'
+          : 'Your uploaded image passed format, resolution, and technical quality checks. Because no trained external CNN backend (ML_BACKEND_URL) is connected, IRIDEON presents computed pixel-level green-channel Model Attention Regions alongside exploratory prototype severity scoring.',
         reasoningSteps: buildReasoningStages(quality, prediction, confidence, detectedCount),
         limitations: [
-          'Prototype spatial saliency map — connect ML_BACKEND_URL for convolutional Grad-CAM gradients.',
+          'Prototype spatial saliency map — connect ML_BACKEND_URL for trained 5-class CNN Grad-CAM gradients and lesion confirmation.',
+          'Lesion-specific segmentation (microaneurysms, hemorrhages, exudates) is not active in Prototype Mode; highlighted overlays show Model Attention Regions only.',
           'Estimated blood sugar, blood pressure, and proliferation levels are educational simulations — not lab tests or clinical diagnoses.',
           'Uploaded images are processed in-memory/locally and are not stored on a remote clinical server.',
         ],
       },
       heatmapData: {
-        regions: basePreset.heatmapRegions,
+        regions: [
+          {
+            x: 50,
+            y: 50,
+            radius: 16,
+            intensity: 0.55,
+            label: 'Model Attention Region (Pixel Saliency)',
+            featureType: 'Pixel Gradient & Contrast',
+          },
+        ],
         attentionGridSummary:
-          'Local green-channel & contrast spatial saliency combined with prototype region priors (not clinical CNN Grad-CAM).',
+          'Computed 24×24 pixel saliency matrix (Model Attention Regions via green-channel gradients & local contrast — not trained CNN Grad-CAM or lesion segmentation).',
       },
       severityDistribution,
       systemicEstimates: extraData.systemicEstimates,
       proliferationGrading: extraData.proliferationGrading,
       symptoms: extraData.symptoms,
+      decisionSupport: {
+        riskLevel:
+          reliability.reliabilityStatus === 'professional_review_required'
+            ? 'URGENT REVIEW'
+            : prediction === 'No apparent DR' && reliability.uncertainty === 'Low'
+              ? 'LOW RISK'
+              : 'REVIEW RECOMMENDED',
+        interpretation:
+          reliability.reliabilityStatus === 'professional_review_required'
+            ? 'Image quality limits or high entropy prevent a reliable prototype assessment.'
+            : `Exploratory contrast heuristics mapped to ${prediction} (${confidence}% uncalibrated score) — specialist verification required.`,
+        suggestedAction:
+          reliability.reliabilityStatus === 'professional_review_required'
+            ? 'Recapture a well-lit, focused fundus photograph and refer for specialist ophthalmologist examination.'
+            : 'Consult a qualified eye care specialist; prototype uploaded-image heuristics cannot confirm or rule out clinical diabetic retinopathy.',
+        disclaimer:
+          'IRIDEON is an AI-assisted research/screening prototype and is not a substitute for professional medical diagnosis or clinical judgment.',
+      },
       modelMetadata: {
         modelName: this.adapterName,
         mode: this.mode,
         attributionNotice:
-          'The highlighted regions indicate areas that influenced the model’s prediction. This visualization is an AI explanation aid and is not clinical proof.',
-        explainabilityMethod: 'Prototype Pixel Saliency & Entropy-Gated Pipeline (connect ML_BACKEND_URL for live CNN Grad-CAM)',
+          'The highlighted regions indicate Model Attention Regions that influenced the heuristic output. This visualization is an AI explanation aid and does not prove clinical lesions.',
+        explainabilityMethod: 'On-Device 24×24 Pixel Saliency & Entropy Gate (connect ML_BACKEND_URL for live CNN Grad-CAM)',
         disclaimer: `${SAFETY_DISCLAIMER} Screening support — not a standalone diagnosis.`,
       },
     };

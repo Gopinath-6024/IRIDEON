@@ -3,52 +3,49 @@ import { Server, Cpu, ShieldAlert } from 'lucide-react';
 
 const MODEL_CARD_FIELDS = [
   {
-    field: 'Model name',
-    value: 'Prototype / Demonstration Model (Modular XAI Adapter)',
-  },
-  {
-    field: 'Task',
+    field: 'Model architecture',
     value:
-      'Educational demonstration of 5-grade Diabetic Retinopathy severity estimation and spatial visual attribution from retinal fundus images.',
+      'Not specified in the current implementation (Modular inference adapter; prototype mode uses pixel-level contrast & green-channel heuristics until ML_BACKEND_URL connects an external CNN/ViT).',
   },
   {
-    field: 'Input',
-    value: '2D RGB retinal fundus image (JPG, JPEG, PNG; validated 128×128 to 8192×8192 px, max 10 MB).',
-  },
-  {
-    field: 'Output',
+    field: 'Framework',
     value:
-      'Estimated severity category, confidence concentration %, uncertainty tier, 6-metric image quality assessment, feature list, Evidence Trail, and simulated heatmap coordinates.',
+      'Node.js + Express + TypeScript backend; React 19 + HTML5 Canvas client preprocessing (supports external FastAPI / PyTorch / TensorFlow services via ML_BACKEND_URL).',
   },
   {
-    field: 'Training data',
+    field: 'Input resolution',
     value:
-      'Not applicable in Prototype / Demonstration Mode — no clinical dataset weights or fabricated validation metrics are bundled. External PyTorch/TensorFlow models can be connected via ML_BACKEND_URL.',
+      'Validated JPG/JPEG/PNG inputs from 128×128 to 8192×8192 px (max 10 MB); sampled at 192×192 px for quality checks and 24×24 spatial grid for saliency.',
+  },
+  {
+    field: 'Number of classes',
+    value:
+      '5 DR educational classes (0: No apparent DR, 1: Mild, 2: Moderate, 3: Severe, 4: Proliferative); uploaded images in Prototype Mode map to 3 exploratory contrast tiers unless an external 5-class model is connected.',
+  },
+  {
+    field: 'Training dataset',
+    value:
+      'Not specified in the current implementation — no pretrained clinical dataset weights or proprietary patient images are bundled.',
+  },
+  {
+    field: 'Validation dataset',
+    value:
+      'Not specified in the current implementation — clinical accuracy, sensitivity, specificity, and ROC-AUC metrics remain unvalidated in this prototype.',
+  },
+  {
+    field: 'XAI method',
+    value:
+      'On-device 24×24 green-channel gradient & contrast pixel saliency (Model Attention Regions) + Sobel vessel contrast map; accepts genuine CNN Grad-CAM heatmaps when ML_BACKEND_URL is configured.',
+  },
+  {
+    field: 'Preprocessing',
+    value:
+      'Magic-byte & MIME signature validation, resolution gating, center-to-rim illumination ratio calculation, green-channel Sobel edge extraction, and circular ROI masking.',
   },
   {
     field: 'Limitations',
     value:
-      'Demonstrates Explainable AI workflow logic using synthetic reference presets and pixel-level image quality checks; cannot detect clinical pathology on real patient photographs.',
-  },
-  {
-    field: 'Known biases',
-    value:
-      'Retinal AI systems commonly face domain shift across camera manufacturers, pupil dilation, fundus pigmentation, media opacity, and image compression.',
-  },
-  {
-    field: 'Intended use',
-    value:
-      'Academic research demonstrations, medical-AI education, HCI explainability studies, and technical prototyping.',
-  },
-  {
-    field: 'Non-intended use',
-    value:
-      'Clinical screening, medical diagnosis, triage, treatment planning, or unsupervised patient care.',
-  },
-  {
-    field: 'Explainability method',
-    value:
-      'On-device 24×24 green-channel gradient & lesion contrast pixel saliency in Prototype Mode (transparently distinguished from CNN gradient Grad-CAM); supports external Grad-CAM payloads when ML_BACKEND_URL is configured.',
+      'Prototype outputs, Model confidence estimates (uncalibrated), Proliferation 1–4 indices, and systemic sugar/BP biomarkers are educational/exploratory aids — never a clinical diagnosis.',
   },
 ];
 
@@ -64,17 +61,17 @@ export const AboutPage: React.FC = () => {
         </h1>
       </div>
 
-      {/* Model Card */}
+      {/* Model & XAI Information Card */}
       <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1322] p-6 sm:p-8 space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <Cpu className="w-5 h-5 text-violet-600 dark:text-violet-400" />
             <h2 className="font-display text-xl font-bold text-slate-900 dark:text-white">
-              Model Card — IRIDEON Prototype / Demonstration Model
+              MODEL &amp; XAI INFORMATION
             </h2>
           </div>
           <span className="text-xs font-mono text-amber-700 dark:text-amber-400">
-            No fabricated clinical metrics
+            Truthful Prototype Specification · No Fabricated Metrics
           </span>
         </div>
 

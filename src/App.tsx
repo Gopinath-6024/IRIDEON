@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
 import { LandingPage } from './components/LandingPage';
@@ -38,6 +38,7 @@ import type {
   AppPage,
   ChatMessage,
   ClientPixelStats,
+  ClinicianDecision,
   DemoCaseId,
   DoctorReviewData,
   ExplainMode,
@@ -107,7 +108,9 @@ export default function App() {
   const [preQuality, setPreQuality] = useState<ImageQualityMetrics | null>(null);
   const [analysis, setAnalysis] = useState<RetinaAnalysisResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisStageLabel, setAnalysisStageLabel] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const analysisAbortRef = useRef<AbortController | null>(null);
 
   // Shared IRIDEON Chatbot State
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() => [
@@ -447,6 +450,7 @@ export default function App() {
     }
 
     try {
+      setAnalysisStageLabel('Validating image...');
       const dataUrl = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => {
@@ -457,6 +461,7 @@ export default function App() {
         reader.readAsDataURL(file);
       });
 
+      setAnalysisStageLabel('Assessing image quality...');
       const stats = await computeClientPixelStats(dataUrl);
       setActiveImageUrl(dataUrl);
       setUploadedPixelStats(stats);
@@ -488,16 +493,15 @@ export default function App() {
         }
 
         setPreQuality(qData.imageQuality);
-      } catch {
-        // Offline / transient network fallback using exact client pixel quality gate
+      } catch (err) {
+        console.error('Image quality endpoint fallback:', err);
         setPreQuality(evaluateClientQualityGate(stats, file.type || 'image/png'));
       }
     } catch (err) {
-      setErrorMsg(
-        err instanceof Error
-          ? err.message
-          : 'Unable to decode the uploaded image. Ensure the file is a valid JPG or PNG.'
-      );
+      console.error('Image upload error:', err);
+      setErrorMsg('Unable to decode the uploaded image. Ensure the file is a valid JPG or PNG.');
+    } finally {
+      setAnalysisStageLabel(null);
     }
   };
 
@@ -513,6 +517,30 @@ export default function App() {
     setPreQuality(evaluateClientQualityGate(stats, 'image/png'));
   };
 
+  const handleCancelAnalysis = useCallback(() => {
+    if (analysisAbortRef.current) {
+      analysisAbortRef.current.abort();
+      analysisAbortRef.current = null;
+    }
+    setIsAnalyzing(false);
+    setAnalysisStageLabel(null);
+    setErrorMsg('Analysis canceled by user.');
+  }, []);
+
+  const handleResetWorkspace = useCallback(() => {
+    if (analysisAbortRef.current) {
+      analysisAbortRef.current.abort();
+      analysisAbortRef.current = null;
+    }
+    setIsAnalyzing(false);
+    setAnalysisStageLabel(null);
+    setActiveImageUrl(null);
+    setUploadedPixelStats(null);
+    setPreQuality(null);
+    setAnalysis(null);
+    setErrorMsg(null);
+  }, []);
+
   // Run Analysis on Uploaded Image (Hard Quality Gate + Pixel Saliency + Offline Fallback)
   const handleRunAnalysis = async () => {
     if (!activeImageUrl) return;
@@ -523,13 +551,22 @@ export default function App() {
       return;
     }
 
+    if (analysisAbortRef.current) {
+      analysisAbortRef.current.abort();
+    }
+    const userController = new AbortController();
+    analysisAbortRef.current = userController;
+
     setIsAnalyzing(true);
     setErrorMsg(null);
+    setAnalysisStageLabel('Validating image...');
 
     try {
+      setAnalysisStageLabel('Assessing image quality...');
       const stats = uploadedPixelStats ?? (await computeClientPixelStats(activeImageUrl));
-      const saliency = await computePixelSaliencyMap(activeImageUrl);
+      if (userController.signal.aborted) return;
 
+      setAnalysisStageLabel('Running DR analysis...');
       let result: RetinaAnalysisResult;
       let ranOffline = isOffline;
 
@@ -541,8 +578,7 @@ export default function App() {
         });
       } else {
         try {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 16000);
+          const timer = setTimeout(() => userController.abort(), 16000);
 
           const res = await fetch('/api/analyze', {
             method: 'POST',
@@ -552,7 +588,7 @@ export default function App() {
               imageDataUrl: activeImageUrl,
               pixelStats: stats,
             }),
-            signal: controller.signal,
+            signal: userController.signal,
           });
           clearTimeout(timer);
 
@@ -574,13 +610,16 @@ export default function App() {
           }
           result = data;
         } catch (networkErr) {
-          // Respect explicit quality rejections; otherwise seamlessly fall back to offline screening
+          if (userController.signal.aborted) {
+            throw networkErr;
+          }
           if (
             networkErr instanceof Error &&
             networkErr.message.includes('Image quality is insufficient')
           ) {
             throw networkErr;
           }
+          console.error('Server analyze fallback to offline local screening:', networkErr);
           ranOffline = true;
           result = await runOfflineLocalScreening({
             sourceType: 'upload',
@@ -589,6 +628,11 @@ export default function App() {
           });
         }
       }
+
+      if (userController.signal.aborted) return;
+      setAnalysisStageLabel('Generating explanation...');
+      const saliency = await computePixelSaliencyMap(activeImageUrl);
+      if (userController.signal.aborted) return;
 
       // Attach computed 24x24 pixel saliency grid so Retina Map is genuinely pixel-derived
       result = {
@@ -603,22 +647,38 @@ export default function App() {
 
       setAnalysis(result);
       await recordCompletedAnalysis(result, activeImageUrl, ranOffline);
+      setAnalysisStageLabel('Analysis complete');
     } catch (err) {
-      const message =
-        err instanceof Error && err.name === 'AbortError'
-          ? 'Analysis request timed out. Please try again.'
-          : err instanceof Error
-            ? err.message
-            : 'IRIDEON service unavailable. Please try again shortly.';
-      setErrorMsg(message);
+      if (err instanceof Error && err.name === 'AbortError') {
+        setErrorMsg('Analysis stopped or timed out. Please try again.');
+      } else if (
+        err instanceof Error &&
+        err.message.includes('Image quality is insufficient')
+      ) {
+        setErrorMsg(err.message);
+      } else {
+        console.error('Upload analysis error:', err);
+        setErrorMsg('IRIDEON could not complete the analysis. Please try again.');
+      }
     } finally {
+      if (analysisAbortRef.current === userController) {
+        analysisAbortRef.current = null;
+      }
       setIsAnalyzing(false);
+      setTimeout(() => setAnalysisStageLabel(null), 1200);
     }
   };
 
   // Run Synthetic Demo Case
   const handleSelectDemo = async (demoId: DemoCaseId, navigateTarget?: AppPage) => {
+    if (analysisAbortRef.current) {
+      analysisAbortRef.current.abort();
+    }
+    const userController = new AbortController();
+    analysisAbortRef.current = userController;
+
     setIsAnalyzing(true);
+    setAnalysisStageLabel('Validating image...');
     setErrorMsg(null);
     setPreQuality(null);
     setUploadedPixelStats(null);
@@ -632,9 +692,11 @@ export default function App() {
     }
 
     try {
+      setAnalysisStageLabel('Assessing image quality...');
       const stats = await computeClientPixelStats(syntheticUrl);
-      const saliency = await computePixelSaliencyMap(syntheticUrl);
+      if (userController.signal.aborted) return;
 
+      setAnalysisStageLabel('Running DR analysis...');
       let result: RetinaAnalysisResult;
       let ranOffline = isOffline;
 
@@ -651,13 +713,18 @@ export default function App() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ sourceType: 'demo', demoCaseId: demoId }),
+            signal: userController.signal,
           });
           const data = (await res.json()) as RetinaAnalysisResult & { error?: string };
           if (!res.ok || !data.prediction) {
             throw new Error(data.error ?? 'Unable to load demo case.');
           }
           result = data;
-        } catch {
+        } catch (networkErr) {
+          if (userController.signal.aborted) {
+            throw networkErr;
+          }
+          console.error('Demo analyze fallback to offline:', networkErr);
           ranOffline = true;
           result = await runOfflineLocalScreening({
             sourceType: 'demo',
@@ -667,6 +734,11 @@ export default function App() {
           });
         }
       }
+
+      if (userController.signal.aborted) return;
+      setAnalysisStageLabel('Generating explanation...');
+      const saliency = await computePixelSaliencyMap(syntheticUrl);
+      if (userController.signal.aborted) return;
 
       result = {
         ...result,
@@ -678,10 +750,20 @@ export default function App() {
 
       setAnalysis(result);
       await recordCompletedAnalysis(result, syntheticUrl, ranOffline);
+      setAnalysisStageLabel('Analysis complete');
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Unable to load demo case.');
+      if (err instanceof Error && err.name === 'AbortError') {
+        setErrorMsg('Demo analysis canceled.');
+      } else {
+        console.error('Demo analysis error:', err);
+        setErrorMsg('Unable to load demo case. Please try again.');
+      }
     } finally {
+      if (analysisAbortRef.current === userController) {
+        analysisAbortRef.current = null;
+      }
       setIsAnalyzing(false);
+      setTimeout(() => setAnalysisStageLabel(null), 1200);
     }
   };
 
@@ -721,6 +803,58 @@ export default function App() {
       prev.map((ref) => (ref.referralId === referralId ? { ...ref, ...updates } : ref))
     );
   };
+
+  const activeLocalRecord = useMemo(
+    () =>
+      analysis
+        ? localRecords.find((r) => r.analysis.caseId === analysis.caseId) ?? null
+        : null,
+    [analysis, localRecords]
+  );
+
+  const handleSaveClinicianDecision = useCallback(
+    (decision: ClinicianDecision, notes: string) => {
+      if (!analysis) return;
+      const mappedStatus: DoctorReviewData['reviewStatus'] =
+        decision === 'Agree with AI'
+          ? 'Reviewed'
+          : decision === 'Needs review'
+            ? 'Under Review'
+            : 'Follow-up Required';
+      const reviewedAt = new Date().toISOString();
+
+      setLocalRecords((prev) =>
+        prev.map((rec) =>
+          rec.analysis.caseId === analysis.caseId
+            ? {
+                ...rec,
+                doctorReview: {
+                  ...rec.doctorReview,
+                  clinicianDecision: decision,
+                  reviewStatus: mappedStatus,
+                  reviewNotes: notes.trim() || rec.doctorReview.reviewNotes,
+                  reviewedAt,
+                  reviewerName:
+                    session?.displayName || rec.doctorReview.reviewerName || 'Clinician / Reviewer',
+                },
+              }
+            : rec
+        )
+      );
+    },
+    [analysis, session]
+  );
+
+  const handleDeleteHistoryCase = useCallback(
+    (caseId: string) => {
+      setSessionHistory((prev) => prev.filter((item) => item.analysis.caseId !== caseId));
+      setLocalRecords((prev) => prev.filter((rec) => rec.analysis.caseId !== caseId));
+      if (analysis?.caseId === caseId) {
+        setAnalysis(null);
+      }
+    },
+    [analysis]
+  );
 
   const openCurrentAnalysisInDoctorReview = () => {
     if (analysis) {
@@ -783,6 +917,7 @@ export default function App() {
             session={session}
             onOpenAuth={() => setAuthModalOpen(true)}
             sessionHistory={sessionHistory}
+            localRecords={localRecords}
             activeCaseId={analysis?.caseId ?? null}
             onSelectHistoryCase={(entry) => {
               setHasAcknowledgedFeatures(true);
@@ -790,6 +925,7 @@ export default function App() {
               setActiveImageUrl(entry.imageUrl);
               setPreQuality(entry.analysis.imageQuality);
             }}
+            onDeleteHistoryCase={handleDeleteHistoryCase}
             onRunDemo={(id) => handleSelectDemo(id, 'analyze')}
             onNavigate={navigate}
           />
@@ -802,6 +938,7 @@ export default function App() {
             imageUrl={activeImageUrl}
             preQuality={preQuality}
             isAnalyzing={isAnalyzing}
+            analysisStageLabel={analysisStageLabel}
             errorMsg={errorMsg}
             defaultExplainMode={defaultExplainMode}
             colormap={colormap}
@@ -809,11 +946,15 @@ export default function App() {
             onAcknowledgeFeatures={() => setHasAcknowledgedFeatures(true)}
             onUploadFile={handleUploadFile}
             onRunAnalysis={handleRunAnalysis}
+            onCancelAnalysis={handleCancelAnalysis}
+            onResetWorkspace={handleResetWorkspace}
             onSelectDemo={(id) => handleSelectDemo(id)}
             onTestUnsuitableImage={handleTestUnsuitableImage}
             onNavigate={navigate}
             onSendToDoctorReview={openCurrentAnalysisInDoctorReview}
             onCreateReferral={openCurrentAnalysisInReferral}
+            activeDoctorReview={activeLocalRecord?.doctorReview ?? null}
+            onSaveClinicianDecision={handleSaveClinicianDecision}
             isOffline={isOffline}
             simulatedOffline={simulatedOffline}
             onToggleSimulatedOffline={() => setSimulatedOffline((v) => !v)}
@@ -870,6 +1011,7 @@ export default function App() {
           <CaseReportPage
             analysis={analysis}
             imageUrl={activeImageUrl}
+            doctorReview={activeLocalRecord?.doctorReview ?? null}
             onNavigate={navigate}
           />
         )}

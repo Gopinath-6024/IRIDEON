@@ -114,8 +114,9 @@ app.post('/api/image-quality', (req, res) => {
 
     const quality = evaluateImageQuality(validation.info, pixelStats);
     res.json({ imageQuality: quality });
-  } catch {
-    res.status(500).json({ error: 'Image quality assessment failed unexpectedly.' });
+  } catch (err) {
+    console.error('[IRIDEON] /api/image-quality error:', err);
+    res.status(500).json({ error: 'IRIDEON could not assess image quality. Please try again.' });
   }
 });
 
@@ -169,10 +170,11 @@ app.post('/api/analyze', async (req, res) => {
     });
     res.json(result);
   } catch (err) {
+    console.error('[IRIDEON] /api/analyze error:', err);
     const message =
       err instanceof Error && err.name === 'AbortError'
         ? 'Analysis timed out while waiting for the inference service.'
-        : 'Unable to complete retinal image analysis right now. Please try again.';
+        : 'IRIDEON could not complete the analysis. Please try again.';
     res.status(502).json({ error: message });
   }
 });
@@ -308,9 +310,16 @@ app.post('/api/explain/stream', async (req, res) => {
 // Case Report Generator endpoint
 app.post('/api/report', (req, res) => {
   try {
-    const { analysis, researcherNotes } = (req.body ?? {}) as {
+    const { analysis, researcherNotes, patientCaseId, clinicianReview } = (req.body ?? {}) as {
       analysis?: RetinaAnalysisResult;
       researcherNotes?: string;
+      patientCaseId?: string;
+      clinicianReview?: {
+        decision?: string | null;
+        reviewStatus?: string;
+        notes?: string;
+        reviewedAt?: string | null;
+      };
     };
 
     if (!analysis || !analysis.caseId) {
@@ -320,18 +329,26 @@ app.post('/api/report', (req, res) => {
 
     const sanitizedNotes =
       typeof researcherNotes === 'string' ? researcherNotes.trim().slice(0, 1000) : '';
+    const sanitizedCaseTag =
+      typeof patientCaseId === 'string' && patientCaseId.trim().length > 0
+        ? patientCaseId.trim().slice(0, 48)
+        : analysis.caseId;
 
     res.json({
       reportId: `RPT-${analysis.caseId}`,
       generatedAt: new Date().toISOString(),
       caseId: analysis.caseId,
+      patientCaseId: sanitizedCaseTag,
       analyzedAt: analysis.analyzedAt,
       sourceType: analysis.sourceType,
       demoLabel: analysis.demoLabel ?? null,
       imageQuality: analysis.imageQuality,
       prediction: analysis.prediction,
-      confidence: analysis.confidence,
+      modelConfidenceEstimate: analysis.confidence,
+      confidenceNote: 'Model confidence estimate (prototype score — not a clinically calibrated probability)',
       uncertainty: analysis.uncertainty,
+      decisionSupport: analysis.decisionSupport ?? null,
+      clinicianReview: clinicianReview ?? null,
       detectedFeatures: analysis.detectedFeatures.filter((f) => f.detected),
       topContributingRegions: analysis.evidenceTrail,
       explanationSummary: analysis.explanation.summary,
@@ -341,8 +358,9 @@ app.post('/api/report', (req, res) => {
       privacyNotice:
         'No personally identifiable patient information or raw fundus imagery is retained on the server.',
     });
-  } catch {
-    res.status(500).json({ error: 'Unable to compile the educational case report.' });
+  } catch (err) {
+    console.error('[IRIDEON] /api/report error:', err);
+    res.status(500).json({ error: 'IRIDEON could not compile the case report. Please try again.' });
   }
 });
 

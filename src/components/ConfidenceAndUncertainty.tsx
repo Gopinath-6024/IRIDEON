@@ -117,6 +117,14 @@ export const ConfidenceAndUncertainty: React.FC<ConfidenceAndUncertaintyProps> =
         </div>
       )}
 
+      {/* Limited Confidence Explicit Advisory */}
+      {(confidence < 65 || uncertainty !== 'Low') && !isReviewRequired && (
+        <div className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-3 text-xs text-amber-950 dark:text-amber-200 flex items-center gap-2 font-medium">
+          <AlertCircle className="w-4 h-4 shrink-0 text-amber-700 dark:text-amber-400" />
+          <span>⚠ AI confidence is limited. Specialist review is recommended.</span>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 items-center">
         {/* Circular Output Score Gauge */}
         <div className="flex items-center gap-4">
@@ -149,17 +157,17 @@ export const ConfidenceAndUncertainty: React.FC<ConfidenceAndUncertaintyProps> =
                 {confidence}%
               </span>
               <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
-                Prototype Score
+                {confidence >= 80 ? 'High Level' : confidence >= 55 ? 'Moderate' : 'Low Level'}
               </span>
             </div>
           </div>
 
           <div>
             <p className="text-xs font-mono text-slate-500 dark:text-slate-400">
-              Output Concentration
+              Model confidence estimate
             </p>
             <p className="text-sm text-slate-700 dark:text-slate-300 mt-1 leading-snug">
-              Prototype heuristic score concentration — not clinically calibrated probability.
+              Uncalibrated prototype heuristic score concentration — NOT a clinically calibrated probability.
             </p>
             {typeof entropyScore === 'number' && (
               <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-1.5">
@@ -179,7 +187,9 @@ export const ConfidenceAndUncertainty: React.FC<ConfidenceAndUncertaintyProps> =
             {uncertainty}
           </p>
           <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-            Screening support — not a standalone diagnosis. Uncertain results require specialist evaluation.
+            {confidence < 65 || uncertainty !== 'Low'
+              ? '⚠ AI confidence is limited. Specialist evaluation is advised.'
+              : 'Screening support — not a standalone diagnosis.'}
           </p>
         </div>
       </div>
